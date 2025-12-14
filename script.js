@@ -322,17 +322,48 @@ function updateSortIndicators() {
   RENDERING + CHARTS + DRAWER + PROFILES
 ************************************************************/
 
-/* ---------- Render Profile Selector ---------- */
+/* ---------- Render Profile Menu ---------- */
 function renderProfileSelector() {
-  const sel = document.getElementById("profileSelect");
-  sel.innerHTML = "";
+  const activeProfile = state.profiles.find(p => p.id === state.activeProfileId);
+  if (!activeProfile) return;
+
+  // Update profile name in header
+  const profileName = document.getElementById("currentProfileName");
+  if (profileName) {
+    profileName.textContent = activeProfile.name;
+  }
+
+  // Update profile initial
+  const profileInitial = document.getElementById("profileInitial");
+  if (profileInitial) {
+    profileInitial.textContent = activeProfile.name.charAt(0).toUpperCase();
+  }
+
+  // Render profile list
+  const profileList = document.getElementById("profileList");
+  if (!profileList) return;
+
+  profileList.innerHTML = "";
   state.profiles.forEach(p => {
-    const opt = document.createElement("option");
-    opt.value = p.id;
-    opt.textContent = p.name;
-    if (p.id === state.activeProfileId) opt.selected = true;
-    sel.appendChild(opt);
+    const btn = document.createElement("button");
+    btn.className = "profile-item" + (p.id === state.activeProfileId ? " active" : "");
+    btn.innerHTML = `
+      <span>${p.name}</span>
+      ${p.id === state.activeProfileId ? '<span class="profile-item-check">✓</span>' : ''}
+    `;
+    btn.addEventListener("click", () => {
+      switchProfile(p.id);
+      closeProfileMenu();
+    });
+    profileList.appendChild(btn);
   });
+}
+
+function closeProfileMenu() {
+  const menu = document.querySelector(".profile-menu");
+  if (menu) {
+    menu.classList.remove("active");
+  }
 }
 
 /* ---------- Render Categories Dropdowns ---------- */
@@ -968,7 +999,7 @@ function undoImport() {
 
 function toggleAllMonths() {
   showAllMonths = !showAllMonths;
-  document.getElementById("toggleAllMonthsBtn").textContent = showAllMonths ? "All ✓" : "All";
+  document.getElementById("toggleAllMonthsBtn").textContent = showAllMonths ? "All Months ✓" : "All Months";
   document.getElementById("toggleAllMonthsBtn").title = showAllMonths ? "Showing all months" : "Show all months";
   renderAll();
 }
@@ -2333,13 +2364,12 @@ document.getElementById("connectBankBtn").addEventListener("click", connectBank)
 
 document.getElementById("addGoalBtn").addEventListener("click", addGoal);
 
-document.getElementById("profileSelect").addEventListener("change", e => {
-  switchProfile(e.target.value);
-});
-
 document.getElementById("createProfileBtn").addEventListener("click", () => {
   const name = prompt("Profile name:");
-  if (name) createNewProfile(name);
+  if (name) {
+    createNewProfile(name);
+    closeProfileMenu();
+  }
 });
 
 document.getElementById("searchBox").addEventListener("input", renderAll);
@@ -2358,29 +2388,30 @@ setTimeout(() => {
   updateSortIndicators();
 }, 100);
 
-// More Menu
-const moreMenuBtn = document.getElementById("moreMenuBtn");
-const moreMenu = document.querySelector(".more-menu");
-const moreMenuDropdown = document.getElementById("moreMenuDropdown");
+// Profile Menu
+const profileMenuBtn = document.getElementById("profileMenuBtn");
+const profileMenu = document.querySelector(".profile-menu");
 
-moreMenuBtn.addEventListener("click", (e) => {
-  e.stopPropagation();
-  moreMenu.classList.toggle("active");
-});
-
-// Close menu when clicking outside
-document.addEventListener("click", (e) => {
-  if (!moreMenu.contains(e.target)) {
-    moreMenu.classList.remove("active");
-  }
-});
-
-// Close menu when clicking a menu item
-document.querySelectorAll(".more-menu-dropdown .menu-item").forEach(item => {
-  item.addEventListener("click", () => {
-    moreMenu.classList.remove("active");
+if (profileMenuBtn && profileMenu) {
+  profileMenuBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    profileMenu.classList.toggle("active");
   });
-});
+
+  // Close menu when clicking outside
+  document.addEventListener("click", (e) => {
+    if (profileMenu && !profileMenu.contains(e.target)) {
+      profileMenu.classList.remove("active");
+    }
+  });
+
+  // Close menu when clicking a menu item
+  document.querySelectorAll(".profile-dropdown .menu-item").forEach(item => {
+    item.addEventListener("click", () => {
+      profileMenu.classList.remove("active");
+    });
+  });
+}
 
 // Settings panel
 document.getElementById("settingsBtn").addEventListener("click", openSettings);
@@ -2501,7 +2532,7 @@ loadSettings();
 initTheme();
 initTabs();
 // Initialize toggle button text
-document.getElementById("toggleAllMonthsBtn").textContent = showAllMonths ? "All ✓" : "All";
+document.getElementById("toggleAllMonthsBtn").textContent = showAllMonths ? "All Months ✓" : "All Months";
 renderAll();
 // Check budget warnings after a short delay
 setTimeout(checkBudgetWarnings, 1000);

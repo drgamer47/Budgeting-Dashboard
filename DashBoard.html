@@ -13,40 +13,44 @@
   <h1>Budget Dashboard</h1>
 
   <div class="header-controls">
-    <!-- Left: Profile & Navigation -->
-    <div class="header-group">
-    <select id="profileSelect"></select>
-      <button id="createProfileBtn" class="btn-icon" title="New Profile">+</button>
-      
-      <div class="nav-separator"></div>
-      
-      <button id="prevMonthBtn" class="btn-icon" title="Previous Month">◀</button>
-      <span id="currentMonthLabel" class="month-label">—</span>
-      <button id="nextMonthBtn" class="btn-icon" title="Next Month">▶</button>
-      <button id="toggleAllMonthsBtn" class="btn-compact">All</button>
+    <!-- Center: Month Navigation -->
+    <div class="month-nav-container">
+      <div class="month-nav">
+        <button id="prevMonthBtn" class="btn-nav" title="Previous Month">◀</button>
+        <span id="currentMonthLabel" class="month-label-large">—</span>
+        <button id="nextMonthBtn" class="btn-nav" title="Next Month">▶</button>
+        <button id="toggleAllMonthsBtn" class="btn-all">All Months</button>
+      </div>
+      <button id="addTransactionBtn" class="btn-add-large">+ Add Transaction</button>
     </div>
 
-    <!-- Right: Actions -->
-    <div class="header-group">
-      <button id="addTransactionBtn" class="btn-primary"><span class="btn-text-full">+ Add Transaction</span><span class="btn-text-mobile">+ Add</span></button>
-      
-      <!-- More Menu -->
-      <div class="more-menu">
-        <button id="moreMenuBtn" class="btn-icon" title="More Options">⋯</button>
-        <div class="more-menu-dropdown" id="moreMenuDropdown">
-          <button id="connectBankBtn" class="menu-item">
-            <span>🏦</span> Connect Bank
-          </button>
-          <div class="menu-divider"></div>
-          <button id="importJsonBtn" class="menu-item">Import JSON</button>
-          <button id="exportJsonBtn" class="menu-item">Export JSON</button>
-          <button id="importCsvBtn" class="menu-item">Import CSV</button>
-          <button id="undoImportBtn" class="menu-item">Undo Import</button>
-          <div class="menu-divider"></div>
-          <button id="clearDataBtn" class="menu-item menu-item-danger">Clear Data</button>
+    <!-- Right: Profile Circle -->
+    <div class="profile-menu">
+      <button id="profileMenuBtn" class="profile-circle" title="Profile Menu">
+        <span id="profileInitial">U</span>
+      </button>
+      <div class="profile-dropdown" id="profileDropdown">
+        <div class="profile-header">
+          <div class="profile-info">
+            <div class="profile-name" id="currentProfileName">Default</div>
+            <div class="profile-subtitle">Current Profile</div>
+          </div>
         </div>
+        <div class="menu-divider"></div>
+        <div class="profile-list" id="profileList"></div>
+        <button id="createProfileBtn" class="menu-item">
+          <span>➕</span> New Profile
+        </button>
+        <div class="menu-divider"></div>
+        <button id="connectBankBtn" class="menu-item">
+          <span>🏦</span> Connect Bank
+        </button>
+        <div class="menu-divider"></div>
+        <button id="importJsonBtn" class="menu-item">Import JSON</button>
+        <button id="exportJsonBtn" class="menu-item">Export JSON</button>
+        <button id="importCsvBtn" class="menu-item">Import CSV</button>
+        <button id="undoImportBtn" class="menu-item">Undo Import</button>
       </div>
-      
     </div>
   </div>
 </header>
@@ -303,6 +307,8 @@
         <button id="exportPdfBtn" class="btn-secondary">Export to PDF</button>
         <button id="exportExcelBtn" class="btn-secondary">Export to Excel</button>
         <button id="backupDataBtn" class="btn-secondary">Backup All Data</button>
+        <div class="menu-divider" style="margin: 15px 0;"></div>
+        <button id="clearDataBtn" class="btn-danger">Clear All Data</button>
       </div>
     </div>
   </div>
