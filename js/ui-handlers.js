@@ -1880,8 +1880,10 @@ export function importCsv() {
 
         const catId = findCategoryId(categoryKey);
 
+        // Generate unique ID using timestamp + random + counter to avoid collisions
+        const uniqueId = `csv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}_${Math.random().toString(36).substr(2, 5)}`;
         return {
-          id: `csv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          id: uniqueId,
           date: dateStr,
           description,
           amount: Math.abs(rawAmount),
@@ -2013,7 +2015,9 @@ export function importCsv() {
       }
       function txFingerprint(t) {
         const cents = toCents(t.amount);
-        return `${t.date}|${t.type}|${cents}|${normalizeDesc(t.description)}`;
+        // Use date, amount, and description only (ignore type to catch duplicates even if type was misclassified)
+        // This helps catch duplicates from previous imports with wrong type
+        return `${t.date}|${cents}|${normalizeDesc(t.description)}`;
       }
 
       const existingTx = Array.isArray(data.transactions) ? data.transactions : [];
