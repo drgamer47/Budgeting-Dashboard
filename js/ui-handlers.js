@@ -1666,21 +1666,50 @@ export async function importBankTransactions(access_token, retryCount = 0) {
     const data = stateManager.getActiveData();
     const defaultCat = data.categories[0]?.id || 'other';
     
-    // Add transactions, avoiding duplicates
-    const existingIds = new Set(data.transactions.map(t => t.plaid_id).filter(Boolean));
+    // Add transactions, avoiding duplicates.
+    // If a Plaid transaction already exists, update its core fields (type/amount/date/desc)
+    // so re-imports can fix earlier mapping issues without losing user category edits.
+    const existingByPlaidId = new Map();
+    data.transactions.forEach(t => {
+      if (t && t.plaid_id) existingByPlaidId.set(t.plaid_id, t);
+    });
+
     let added = 0;
+    let updated = 0;
 
     transactions.forEach(tx => {
-      if (!existingIds.has(tx.plaid_id)) {
+      if (!tx?.plaid_id) return;
+      const existing = existingByPlaidId.get(tx.plaid_id);
+      if (!existing) {
         tx.categoryId = tx.categoryId || defaultCat;
         data.transactions.push(tx);
         added++;
+        return;
       }
+
+      // Preserve user category choice if already set
+      const preservedCategoryId = existing.categoryId;
+
+      existing.date = tx.date;
+      existing.description = tx.description;
+      existing.amount = tx.amount;
+      existing.type = tx.type;
+      existing.note = tx.note;
+      existing.account_id = tx.account_id;
+
+      if (!preservedCategoryId) {
+        existing.categoryId = tx.categoryId || defaultCat;
+      }
+
+      updated++;
     });
 
     stateManager.saveState();
     renderAll();
-    showToast(`Imported ${added} transactions from bank`, 'Bank Import');
+    const msg = updated > 0
+      ? `Imported ${added} new and updated ${updated} existing transactions from bank`
+      : `Imported ${added} transactions from bank`;
+    showToast(msg, 'Bank Import');
   } catch (error) {
     logger.error('Error importing transactions:', error);
     showToast(error?.message || 'Error importing transactions', TOAST_TYPES.ERROR);
