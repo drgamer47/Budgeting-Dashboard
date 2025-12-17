@@ -163,6 +163,12 @@ app.post('/api/create_link_token', async (req, res) => {
       language: 'en',
     };
 
+    // Optional: apply a Link customization (often required for production Data Transparency Messaging)
+    // Create/enable this in Plaid Dashboard and set PLAID_LINK_CUSTOMIZATION in Render.
+    if (process.env.PLAID_LINK_CUSTOMIZATION) {
+      request.link_customization_name = process.env.PLAID_LINK_CUSTOMIZATION;
+    }
+
     console.log('Creating link token with request:', { ...request, user: { client_user_id: request.user.client_user_id } });
     const response = await client.linkTokenCreate(request);
     console.log('Link token created successfully');
