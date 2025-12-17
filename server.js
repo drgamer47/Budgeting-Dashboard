@@ -107,11 +107,24 @@ app.get('/api/supabase-config', (req, res) => {
 let client = null;
 const plaidClientId = process.env.PLAID_CLIENT_ID;
 const plaidSecret = process.env.PLAID_SECRET;
+const plaidEnv = (process.env.PLAID_ENV || 'sandbox').toLowerCase(); // sandbox | development | production
+
+function resolvePlaidBasePath(envName) {
+  switch (envName) {
+    case 'production':
+      return PlaidEnvironments.production;
+    case 'development':
+      return PlaidEnvironments.development;
+    case 'sandbox':
+    default:
+      return PlaidEnvironments.sandbox;
+  }
+}
 
 if (plaidClientId && plaidSecret && plaidClientId !== 'YOUR_CLIENT_ID' && plaidSecret !== 'YOUR_SECRET') {
   try {
     const configuration = new Configuration({
-      basePath: PlaidEnvironments.sandbox, // Use 'sandbox' for free development
+      basePath: resolvePlaidBasePath(plaidEnv),
       baseOptions: {
         headers: {
           'PLAID-CLIENT-ID': plaidClientId,
@@ -120,7 +133,7 @@ if (plaidClientId && plaidSecret && plaidClientId !== 'YOUR_CLIENT_ID' && plaidS
       },
     });
     client = new PlaidApi(configuration);
-    console.log('✅ Plaid client initialized');
+    console.log(`✅ Plaid client initialized (${plaidEnv})`);
   } catch (error) {
     console.error('⚠️  Error initializing Plaid client:', error.message);
   }
