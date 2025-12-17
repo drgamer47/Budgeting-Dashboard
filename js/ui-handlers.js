@@ -2048,7 +2048,31 @@ export function importCsv() {
             // no-op
           }
           logger.error('Error saving CSV transactions to Supabase:', error);
-          showToast(`Error importing CSV to Supabase: ${error.message || 'Unknown error'}`, TOAST_TYPES.ERROR);
+          
+          // Extract meaningful error message from Supabase error object
+          let errorMsg = 'Unknown error';
+          if (error) {
+            if (typeof error === 'string') {
+              errorMsg = error;
+            } else if (error.message) {
+              errorMsg = error.message;
+            } else if (error.details) {
+              errorMsg = error.details;
+            } else if (error.hint) {
+              errorMsg = error.hint;
+            } else if (error.code) {
+              errorMsg = `Error code: ${error.code}`;
+            } else {
+              // Last resort: try to stringify the error
+              try {
+                errorMsg = JSON.stringify(error);
+              } catch {
+                errorMsg = String(error);
+              }
+            }
+          }
+          
+          showToast(`Error importing CSV to Supabase: ${errorMsg}`, TOAST_TYPES.ERROR);
           return;
         }
       }
