@@ -1908,25 +1908,50 @@ export function importCsv() {
 
         let tx = null;
 
-        // Try A: [date, desc, amount, type, category]
-        tx = buildTx({
-          dateStr,
-          desc: cols[1],
-          rawAmount: normalizeAmount(cols[2]),
-          typeToken: cols[3],
-          categoryToken: cols[4]
-        });
-
-        // Try B: [date, amount, desc, categoryOrType]
-        if (!tx) {
-          const rawAmt = normalizeAmount(cols[1]);
-          if (rawAmt !== null) {
+        // Try B first: [date, amount, desc, categoryOrType] - most common bank export format
+        // Check if cols[1] looks like an amount (numeric) before trying other formats
+        const col1Amount = normalizeAmount(cols[1]);
+        const col2Amount = normalizeAmount(cols[2]);
+        
+        if (col1Amount !== null && col2Amount === null) {
+          // cols[1] is numeric, cols[2] is not -> format B: date, amount, desc
+          tx = buildTx({
+            dateStr,
+            desc: cols[2],
+            rawAmount: col1Amount,
+            typeToken: '', // infer
+            categoryToken: cols[3] || ''
+          });
+        } else if (col2Amount !== null && col1Amount === null) {
+          // cols[2] is numeric, cols[1] is not -> format A or C: date, desc, amount
+          tx = buildTx({
+            dateStr,
+            desc: cols[1],
+            rawAmount: col2Amount,
+            typeToken: cols[3] || '',
+            categoryToken: cols[4] || ''
+          });
+        } else {
+          // Ambiguous - try B first (most common), then A
+          // Try B: [date, amount, desc, categoryOrType]
+          if (col1Amount !== null) {
             tx = buildTx({
               dateStr,
               desc: cols[2],
-              rawAmount: rawAmt,
+              rawAmount: col1Amount,
               typeToken: '', // infer
-              categoryToken: cols[3]
+              categoryToken: cols[3] || ''
+            });
+          }
+          
+          // Try A: [date, desc, amount, type, category]
+          if (!tx && col2Amount !== null) {
+            tx = buildTx({
+              dateStr,
+              desc: cols[1],
+              rawAmount: col2Amount,
+              typeToken: cols[3] || '',
+              categoryToken: cols[4] || ''
             });
           }
         }
