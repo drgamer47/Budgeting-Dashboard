@@ -1841,8 +1841,9 @@ export function importCsv() {
 
       function normalizeAmount(raw) {
         raw = raw.replace(/^"|"$/g, '').trim();
-        raw = raw.replace(/[^0-9.\-]/g, ''); // remove junk
-        if (!raw) return null;
+        // Only accept if it looks like a number (starts with digit or minus, contains mostly digits/decimal)
+        // Reject if it has letters or other non-numeric content (except decimal point and minus)
+        if (!/^-?\d+\.?\d*$/.test(raw)) return null;
         const n = parseFloat(raw);
         return isNaN(n) ? null : n;
       }
