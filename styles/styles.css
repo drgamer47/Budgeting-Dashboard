@@ -105,6 +105,120 @@ header {
   gap: 16px;
 }
 
+/* Notifications */
+.notifications-wrapper {
+  position: relative;
+  z-index: 1000;
+}
+
+.icon-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: var(--bg-tertiary);
+}
+
+.notifications-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  border: 2px solid var(--bg-primary);
+}
+
+.notifications-panel {
+  display: none;
+  position: absolute;
+  top: 46px;
+  right: 0;
+  width: 320px;
+  max-width: min(92vw, 360px);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 14px 40px rgba(0,0,0,0.45);
+  overflow: hidden;
+}
+
+.notifications-wrapper.active .notifications-panel {
+  display: block;
+}
+
+.notifications-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.notifications-title {
+  font-weight: 600;
+}
+
+.notifications-list {
+  max-height: 380px;
+  overflow: auto;
+}
+
+.notifications-empty {
+  padding: 14px 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.notification-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.notification-item:last-child {
+  border-bottom: none;
+}
+
+.notification-item.unread {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.notification-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.notification-message {
+  font-size: 13px;
+  white-space: pre-line;
+}
+
+.notification-item.level-warning .notification-message {
+  color: #fbbf24;
+}
+
+.notification-item.level-error .notification-message {
+  color: #f87171;
+}
+
 .budget-selector-menu {
   display: flex;
   align-items: center;
@@ -2166,6 +2280,9 @@ tr:hover {
     position: absolute;
     top: 12px;
     right: 16px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
   }
 
   header h1 {
@@ -2174,9 +2291,9 @@ tr:hover {
   }
 
   .profile-menu {
-    position: absolute;
-    top: 0;
-    right: 0;
+    position: relative;
+    top: auto;
+    right: auto;
   }
 
   .month-nav-container {

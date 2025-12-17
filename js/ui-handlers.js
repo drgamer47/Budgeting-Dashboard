@@ -6,6 +6,7 @@
 import { stateManager } from './state-management.js';
 import { logger } from './logger.js';
 import { showToast, formatMoney, formatDate, isValidUUID } from './utils.js';
+import { addNotification } from './notifications.js';
 import { DEFAULT_CATEGORIES, API_BASE_URL, API_SERVER_PORT, TOAST_TYPES, RETRY_CONFIG, TRANSACTION_HISTORY_DAYS, INVITE_CODE_LENGTH, INVITE_CODE_EXPIRATION_DAYS, CSV_CONFIG } from './constants.js';
 
 // Import render functions
@@ -309,7 +310,10 @@ export function checkBudgetWarnings() {
       const message = percentage >= 100 
         ? `⚠️ Over budget: ${cat.name} (${formatMoney(monthExpenses)} / ${formatMoney(cat.monthlyBudget)})`
         : `⚠️ Approaching budget: ${cat.name} (${percentage.toFixed(0)}%)`;
-      showToast(message, percentage >= 100 ? TOAST_TYPES.WARNING : TOAST_TYPES.INFO);
+      // Persist these in the notification center so users can review them later.
+      // Dedupe per category per month to avoid spam.
+      const dedupeKey = `budgetWarning:${currentMonth}:${cat.id}:${percentage >= 100 ? 'over' : 'near'}`;
+      addNotification(message, { level: percentage >= 100 ? 'warning' : 'info', dedupeKey });
     }
   });
 }
@@ -925,6 +929,10 @@ function registerEventHandlers() {
   if (profileMenuBtn) {
     profileMenuBtn.addEventListener('click', (e) => {
       e.stopPropagation();
+      // Only one popover open at a time
+      if (typeof window.closeNotificationsPanel === 'function') {
+        window.closeNotificationsPanel();
+      }
       const profileMenu = document.querySelector('.profile-menu');
       if (profileMenu) {
         profileMenu.classList.toggle('active');

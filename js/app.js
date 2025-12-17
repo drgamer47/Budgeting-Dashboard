@@ -18,6 +18,7 @@ import { initRecurring } from './recurring.js';
 // Import UI modules
 import { initRenderers, renderAll, updateMonthYearSelectors, renderProfileSelector } from './ui-renderers.js';
 import { initHandlers, initTheme, initTabs, checkBudgetWarnings, getSettings } from './ui-handlers.js';
+import { initNotifications } from './notifications.js';
 
 // Import Supabase integration
 import * as supabaseIntegration from '../services/supabase-integration.js';
@@ -63,6 +64,7 @@ export async function initApp() {
     // Initialize UI
     const settings = getSettings();
     initTheme();
+    initNotifications();
     initTabs();
     
     // Initialize month/year selectors

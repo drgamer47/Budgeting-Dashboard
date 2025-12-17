@@ -40,6 +40,21 @@
   </div>
 
   <div class="header-right">
+    <!-- Notifications -->
+    <div class="notifications-wrapper" id="notificationsWrapper">
+      <button id="notificationsBtn" class="icon-btn" title="Notifications">
+        <span class="icon" aria-hidden="true">🔔</span>
+        <span id="notificationsBadge" class="notifications-badge" style="display: none;">0</span>
+      </button>
+      <div class="notifications-panel" id="notificationsPanel" aria-hidden="true">
+        <div class="notifications-header">
+          <div class="notifications-title">Notifications</div>
+          <button id="clearNotificationsBtn" class="btn-secondary btn-compact" type="button">Clear</button>
+        </div>
+        <div class="notifications-list" id="notificationsList"></div>
+      </div>
+    </div>
+
     <!-- Profile Button - Top Right -->
     <div class="profile-menu">
       <button id="profileMenuBtn" class="profile-circle" title="Profile Menu">
