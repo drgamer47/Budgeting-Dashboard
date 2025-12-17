@@ -568,6 +568,11 @@ function createLoadDataFromSupabase() {
       if (!isStillCurrent()) return;
       if (recError) logger.error('Error loading recurring transactions:', recError);
       
+      const otherCategoryId =
+        (categories || []).find(c => (c?.name || '').toLowerCase() === 'other')?.id ||
+        (categories || []).find(c => (c?.name || '').toLowerCase().includes('other'))?.id ||
+        null;
+
       // Transform Supabase data to match localStorage format
       const transformedTransactions = (transactions || []).map(t => ({
         id: t.id,
@@ -575,7 +580,7 @@ function createLoadDataFromSupabase() {
         description: t.description,
         amount: parseFloat(t.amount),
         type: t.type,
-        categoryId: t.category_id || t.category?.id || t.categories?.id || 'other',
+        categoryId: t.category_id || t.category?.id || t.categories?.id || otherCategoryId || null,
         merchant: t.merchant || undefined,
         note: t.notes || undefined,
         userId: t.user_id,

@@ -1670,34 +1670,69 @@ export async function importBankTransactions(access_token, retryCount = 0) {
       categories.find(c => (c?.id || '').toLowerCase() === 'other')?.id ||
       categories.find(c => (c?.name || '').toLowerCase() === 'other')?.id ||
       categories[0]?.id ||
-      'other';
-    
-    // Add transactions, avoiding duplicates.
-    // If a Plaid transaction already exists, update its core fields (type/amount/date/desc)
-    // so re-imports can fix earlier mapping issues without losing user category edits.
+      null;
+
+    // Dedupe by plaid_id
     const existingByPlaidId = new Map();
-    data.transactions.forEach(t => {
+    (Array.isArray(data.transactions) ? data.transactions : []).forEach(t => {
       if (t && t.plaid_id) existingByPlaidId.set(t.plaid_id, t);
     });
 
+    const incoming = (Array.isArray(transactions) ? transactions : []).filter(t => t && t.plaid_id);
+    const toInsert = incoming.filter(t => !existingByPlaidId.has(t.plaid_id));
+
+    // Supabase mode: write imported transactions to Supabase (so they get real UUID ids)
+    if (useSupabase && currentBudget && currentUser && transactionService) {
+      if (toInsert.length === 0) {
+        showToast('No new bank transactions to import', TOAST_TYPES.INFO);
+        return;
+      }
+
+      const rows = toInsert.map(tx => ({
+        date: tx.date,
+        description: tx.description,
+        amount: Number(tx.amount),
+        type: tx.type,
+        category_id: isValidUUID(defaultCat) ? defaultCat : null,
+        merchant: tx.merchant || null,
+        notes: tx.note || null,
+        plaid_id: tx.plaid_id || null,
+        account_id: tx.account_id || null
+      }));
+
+      // Insert in bulk if available
+      if (typeof transactionService.bulkCreateTransactions === 'function') {
+        const { error } = await transactionService.bulkCreateTransactions(currentBudget.id, currentUser.id, rows);
+        if (error) throw error;
+      } else {
+        for (const row of rows) {
+          const { error } = await transactionService.createTransaction(currentBudget.id, currentUser.id, row);
+          if (error) throw error;
+        }
+      }
+
+      if (loadDataFromSupabase) {
+        await loadDataFromSupabase();
+      }
+      renderAll();
+      showToast(`Imported ${toInsert.length} bank transaction${toInsert.length === 1 ? '' : 's'}`, TOAST_TYPES.SUCCESS);
+      return;
+    }
+
+    // LocalStorage mode: merge into local transactions and preserve/repair categories
     let added = 0;
     let updated = 0;
 
-    transactions.forEach(tx => {
-      if (!tx?.plaid_id) return;
+    incoming.forEach(tx => {
       const existing = existingByPlaidId.get(tx.plaid_id);
       if (!existing) {
-        // Always assign a valid default category for new imports.
-        // (Plaid data doesn't map 1:1 to our custom categories.)
-        tx.categoryId = defaultCat;
+        tx.categoryId = defaultCat || tx.categoryId || 'other';
         data.transactions.push(tx);
         added++;
         return;
       }
 
-      // Preserve user category choice if already set
       const preservedCategoryId = existing.categoryId;
-
       existing.date = tx.date;
       existing.description = tx.description;
       existing.amount = tx.amount;
@@ -1705,11 +1740,9 @@ export async function importBankTransactions(access_token, retryCount = 0) {
       existing.note = tx.note;
       existing.account_id = tx.account_id;
 
-      // Keep category if it still exists; otherwise reset to default.
-      if (!preservedCategoryId || !categoryIdSet.has(preservedCategoryId)) {
-        existing.categoryId = defaultCat;
+      if (!preservedCategoryId || (defaultCat && !categoryIdSet.has(preservedCategoryId))) {
+        existing.categoryId = defaultCat || preservedCategoryId || 'other';
       }
-
       updated++;
     });
 
