@@ -47,6 +47,14 @@ app.get('/reset-password', (req, res) => {
   res.sendFile(path.join(__dirname, 'pages', 'reset-password.html'));
 });
 
+// Serve privacy policy page
+app.get('/privacy', (req, res) => {
+  res.sendFile(path.join(__dirname, 'pages', 'privacy.html'));
+});
+app.get('/privacy.html', (req, res) => {
+  res.sendFile(path.join(__dirname, 'pages', 'privacy.html'));
+});
+
 // Serve static files (CSS, JS, etc.) - AFTER specific routes
 // Skip HTML files from static serving (they're handled by routes above)
 const staticMiddleware = express.static(path.join(__dirname));
