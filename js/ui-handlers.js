@@ -1664,7 +1664,13 @@ export async function importBankTransactions(access_token, retryCount = 0) {
     }
 
     const data = stateManager.getActiveData();
-    const defaultCat = data.categories[0]?.id || 'other';
+    const categories = Array.isArray(data.categories) ? data.categories : [];
+    const categoryIdSet = new Set(categories.map(c => c?.id).filter(Boolean));
+    const defaultCat =
+      categories.find(c => (c?.id || '').toLowerCase() === 'other')?.id ||
+      categories.find(c => (c?.name || '').toLowerCase() === 'other')?.id ||
+      categories[0]?.id ||
+      'other';
     
     // Add transactions, avoiding duplicates.
     // If a Plaid transaction already exists, update its core fields (type/amount/date/desc)
@@ -1681,7 +1687,9 @@ export async function importBankTransactions(access_token, retryCount = 0) {
       if (!tx?.plaid_id) return;
       const existing = existingByPlaidId.get(tx.plaid_id);
       if (!existing) {
-        tx.categoryId = tx.categoryId || defaultCat;
+        // Always assign a valid default category for new imports.
+        // (Plaid data doesn't map 1:1 to our custom categories.)
+        tx.categoryId = defaultCat;
         data.transactions.push(tx);
         added++;
         return;
@@ -1697,8 +1705,9 @@ export async function importBankTransactions(access_token, retryCount = 0) {
       existing.note = tx.note;
       existing.account_id = tx.account_id;
 
-      if (!preservedCategoryId) {
-        existing.categoryId = tx.categoryId || defaultCat;
+      // Keep category if it still exists; otherwise reset to default.
+      if (!preservedCategoryId || !categoryIdSet.has(preservedCategoryId)) {
+        existing.categoryId = defaultCat;
       }
 
       updated++;

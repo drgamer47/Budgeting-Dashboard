@@ -351,7 +351,8 @@ app.post('/api/transactions', async (req, res) => {
         description: t.name || t.merchant_name || 'Unknown',
         amount: Math.abs(amt),
         type: isExpense ? 'expense' : 'income',
-        categoryId: 'other', // Default, user can recategorize
+        // categoryId is assigned client-side based on the active budget's categories
+        // (Supabase IDs are UUIDs, so a hard-coded "other" would not match).
         note: t.category ? t.category.join(', ') : '',
         plaid_id: t.transaction_id,
         account_id: t.account_id,
