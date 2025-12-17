@@ -340,15 +340,16 @@ app.post('/api/transactions', async (req, res) => {
     console.log(`Total transactions from Plaid: ${allTransactions.length}`);
 
     // Transform Plaid transactions to our format
-    // Plaid: negative amounts = debits (expenses), positive = credits (income)
+    // Plaid Transactions: amounts are typically positive for money out (debits) and negative for money in (credits).
     const transactions = allTransactions.map(t => {
-      // Plaid returns negative amounts for expenses (debits) and positive for income (credits)
-      const isExpense = t.amount < 0;
+      const amt = Number(t.amount);
+      // In practice, most spending is returned as positive amounts.
+      const isExpense = amt > 0;
       return {
         id: `plaid_${t.transaction_id}`,
         date: t.date,
         description: t.name || t.merchant_name || 'Unknown',
-        amount: Math.abs(t.amount),
+        amount: Math.abs(amt),
         type: isExpense ? 'expense' : 'income',
         categoryId: 'other', // Default, user can recategorize
         note: t.category ? t.category.join(', ') : '',
