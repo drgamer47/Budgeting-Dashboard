@@ -163,6 +163,12 @@ app.post('/api/create_link_token', async (req, res) => {
       language: 'en',
     };
 
+    // Optional: Plaid Transactions can require time to prepare data. Providing a webhook lets Plaid notify us
+    // when the product is ready (avoids PRODUCT_NOT_READY loops).
+    if (process.env.PLAID_WEBHOOK_URL) {
+      request.webhook = process.env.PLAID_WEBHOOK_URL;
+    }
+
     // Optional: apply a Link customization (often required for production Data Transparency Messaging)
     // Create/enable this in Plaid Dashboard and set PLAID_LINK_CUSTOMIZATION in Render.
     if (process.env.PLAID_LINK_CUSTOMIZATION) {
@@ -181,6 +187,24 @@ app.post('/api/create_link_token', async (req, res) => {
       details: error.response?.data || 'Unknown error'
     });
   }
+});
+
+// Plaid webhook receiver (minimal)
+// Configure PLAID_WEBHOOK_URL to point here, e.g. https://<your-domain>/api/plaid/webhook
+app.post('/api/plaid/webhook', (req, res) => {
+  try {
+    const body = req.body || {};
+    console.log('Plaid webhook received:', {
+      webhook_type: body.webhook_type,
+      webhook_code: body.webhook_code,
+      item_id: body.item_id,
+      environment: body.environment,
+      request_id: body.request_id
+    });
+  } catch (e) {
+    console.error('Error handling Plaid webhook:', e);
+  }
+  res.status(200).json({ ok: true });
 });
 
 // Exchange public token for access token
