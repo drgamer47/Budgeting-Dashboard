@@ -5,7 +5,7 @@
 
 import { stateManager } from './state-management.js';
 import { logger } from './logger.js';
-import { formatMoney, formatDate, showToast, isValidUUID, isMobileDevice, triggerHapticFeedback, currentMonthISO } from './utils.js';
+import { formatMoney, formatDate, showToast, isValidUUID, isMobileDevice, triggerHapticFeedback, currentMonthISO, debounce } from './utils.js';
 import { LONG_PRESS_DURATION, LONG_PRESS_MOVE_THRESHOLD, MOBILE_BREAKPOINT, DEFAULT_SORT_COLUMN, DEFAULT_SORT_DIRECTION, SELECTION_MODES } from './constants.js';
 
 // Module-level state
@@ -101,6 +101,12 @@ export function initTransactions(deps) {
     logger.warn('Failed to bind addTransactionBtn fallback handler:', e);
   }
   
+  // Register search and filter event listeners
+  setupSearchAndFilterListeners();
+  
+  // Register sorting event listeners
+  setupSortingListeners();
+  
   // Update when dependencies change
   if (deps.onUpdate) {
     deps.onUpdate(() => {
@@ -109,6 +115,54 @@ export function initTransactions(deps) {
       useSupabase = deps.useSupabase;
     });
   }
+}
+
+/**
+ * Setup search and filter event listeners
+ */
+function setupSearchAndFilterListeners() {
+  // Debounced render function to avoid excessive re-renders
+  const debouncedRender = debounce(() => {
+    if (renderAll) {
+      renderAll();
+    }
+  }, 300);
+
+  // Search box
+  const searchBox = document.getElementById('searchBox');
+  if (searchBox && !searchBox.dataset.bound) {
+    searchBox.addEventListener('input', debouncedRender);
+    searchBox.dataset.bound = '1';
+  }
+
+  // Type filter
+  const filterType = document.getElementById('filterType');
+  if (filterType && !filterType.dataset.bound) {
+    filterType.addEventListener('change', debouncedRender);
+    filterType.dataset.bound = '1';
+  }
+
+  // Category filter
+  const filterCategory = document.getElementById('filterCategory');
+  if (filterCategory && !filterCategory.dataset.bound) {
+    filterCategory.addEventListener('change', debouncedRender);
+    filterCategory.dataset.bound = '1';
+  }
+}
+
+/**
+ * Setup sorting event listeners
+ */
+function setupSortingListeners() {
+  // Use delegated event listener to handle clicks on sortable headers
+  document.addEventListener('click', (e) => {
+    const th = e.target.closest('th.sortable[data-sort]');
+    if (th && th.dataset.sort) {
+      e.preventDefault();
+      e.stopPropagation();
+      sortTable(th.dataset.sort);
+    }
+  });
 }
 
 /**
