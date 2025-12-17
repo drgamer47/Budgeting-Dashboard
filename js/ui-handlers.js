@@ -1688,24 +1688,57 @@ export async function importBankTransactions(access_token, retryCount = 0) {
         return;
       }
 
-      const rows = toInsert.map(tx => ({
-        date: tx.date,
-        description: tx.description,
-        amount: Number(tx.amount),
-        type: tx.type,
-        category_id: isValidUUID(defaultCat) ? defaultCat : null,
-        merchant: tx.merchant || null,
-        notes: tx.note || null,
-        plaid_id: tx.plaid_id || null,
-        account_id: tx.account_id || null
-      }));
+      // Validate amounts against database DECIMAL(10, 2) limit (max: 99,999,999.99)
+      const MAX_AMOUNT = 99999999.99;
+      const validPlaidRows = [];
+      const skippedPlaidRows = [];
+      
+      for (const tx of toInsert) {
+        const amount = Number(tx.amount);
+        if (isNaN(amount) || Math.abs(amount) >= MAX_AMOUNT) {
+          skippedPlaidRows.push({
+            description: tx.description,
+            amount: tx.amount,
+            reason: isNaN(amount) ? 'Invalid amount' : 'Amount too large (max: $99,999,999.99)'
+          });
+          continue;
+        }
+        
+        validPlaidRows.push({
+          date: tx.date,
+          description: tx.description,
+          amount: amount,
+          type: tx.type,
+          category_id: isValidUUID(defaultCat) ? defaultCat : null,
+          merchant: tx.merchant || null,
+          notes: tx.note || null,
+          plaid_id: tx.plaid_id || null,
+          account_id: tx.account_id || null
+        });
+      }
+      
+      if (validPlaidRows.length === 0) {
+        showToast(
+          `No valid transactions to import. ${skippedPlaidRows.length > 0 ? `Skipped ${skippedPlaidRows.length} transaction(s) with invalid amounts.` : ''}`,
+          TOAST_TYPES.ERROR
+        );
+        return;
+      }
+      
+      if (skippedPlaidRows.length > 0) {
+        logger.warn(`Skipped ${skippedPlaidRows.length} Plaid transaction(s) with invalid amounts:`, skippedPlaidRows);
+        showToast(
+          `Skipped ${skippedPlaidRows.length} transaction(s) with invalid amounts (max: $99,999,999.99). Importing ${validPlaidRows.length} valid transaction(s)...`,
+          TOAST_TYPES.WARNING
+        );
+      }
 
       // Insert in bulk if available
       if (typeof transactionService.bulkCreateTransactions === 'function') {
-        const { error } = await transactionService.bulkCreateTransactions(currentBudget.id, currentUser.id, rows);
+        const { error } = await transactionService.bulkCreateTransactions(currentBudget.id, currentUser.id, validPlaidRows);
         if (error) throw error;
       } else {
-        for (const row of rows) {
+        for (const row of validPlaidRows) {
           const { error } = await transactionService.createTransaction(currentBudget.id, currentUser.id, row);
           if (error) throw error;
         }
@@ -1715,7 +1748,10 @@ export async function importBankTransactions(access_token, retryCount = 0) {
         await loadDataFromSupabase();
       }
       renderAll();
-      showToast(`Imported ${toInsert.length} bank transaction${toInsert.length === 1 ? '' : 's'}`, TOAST_TYPES.SUCCESS);
+      
+      const plaidSuccessMsg = `Imported ${validPlaidRows.length} bank transaction${validPlaidRows.length === 1 ? '' : 's'}` +
+        (skippedPlaidRows.length > 0 ? ` (skipped ${skippedPlaidRows.length} invalid amount${skippedPlaidRows.length === 1 ? '' : 's'})` : '');
+      showToast(plaidSuccessMsg, TOAST_TYPES.SUCCESS);
       return;
     }
 
