@@ -26,6 +26,78 @@ let categoryChart = null;
 let monthlyChart = null;
 let sankeyChartDiv = null;
 let resizeTimeout = null;
+let sankeyAnimTimer = null;
+
+function stopSankeyAnimation() {
+  if (sankeyAnimTimer) {
+    clearInterval(sankeyAnimTimer);
+    sankeyAnimTimer = null;
+  }
+}
+
+function clamp01(n) {
+  return Math.max(0, Math.min(1, n));
+}
+
+function parseRgba(color) {
+  if (typeof color !== 'string') return null;
+  const m = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([0-9.]+))?\s*\)/i);
+  if (!m) return null;
+  return {
+    r: parseInt(m[1], 10),
+    g: parseInt(m[2], 10),
+    b: parseInt(m[3], 10),
+    a: m[4] === undefined ? 1 : parseFloat(m[4])
+  };
+}
+
+function startSankeyFlowAnimation(chartDiv, baseLinkColors, phases) {
+  if (!chartDiv || typeof Plotly === 'undefined') return;
+  if (!Array.isArray(baseLinkColors) || baseLinkColors.length === 0) return;
+
+  stopSankeyAnimation();
+
+  const startedAt = performance.now();
+  const durationMs = 1400;
+  const tickMs = 80; // ~12.5fps to keep it light
+  const speed = 0.012; // radians per ms
+  const phaseArr = Array.isArray(phases) && phases.length === baseLinkColors.length
+    ? phases
+    : baseLinkColors.map((_, i) => i * 0.35);
+
+  const baseParsed = baseLinkColors.map(c => parseRgba(c) || { r: 96, g: 165, b: 250, a: 0.45 });
+
+  sankeyAnimTimer = setInterval(() => {
+    const t = performance.now() - startedAt;
+    if (t >= durationMs) {
+      stopSankeyAnimation();
+      try {
+        Plotly.restyle(chartDiv, { 'link.color': [baseLinkColors] }, [0]);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const newColors = baseParsed.map((c, i) => {
+      const w = (Math.sin(t * speed + phaseArr[i]) + 1) / 2; // 0..1
+      // brighten slightly + pulse alpha to create a subtle flowing/shimmer effect
+      const brighten = 0.28 * w;
+      const r = Math.round(c.r + (255 - c.r) * brighten);
+      const g = Math.round(c.g + (255 - c.g) * brighten);
+      const b = Math.round(c.b + (255 - c.b) * brighten);
+      const a = clamp01((c.a || 0.45) * (0.65 + 0.65 * w));
+      return `rgba(${r}, ${g}, ${b}, ${a})`;
+    });
+
+    try {
+      Plotly.restyle(chartDiv, { 'link.color': [newColors] }, [0]);
+    } catch {
+      // If the chart was re-rendered / removed mid-animation
+      stopSankeyAnimation();
+    }
+  }, tickMs);
+}
 
 /**
  * Initialize UI renderers
@@ -307,6 +379,9 @@ export function renderMonthlyChart() {
 export function renderSankeyChart() {
   const chartDiv = document.getElementById("sankeyChart");
   if (!chartDiv || typeof Plotly === 'undefined') return;
+
+  // Prevent stacking animations across re-renders
+  stopSankeyAnimation();
   
   const isMobile = window.innerWidth <= MOBILE_BREAKPOINT;
   const isSmallMobile = window.innerWidth <= 480;
@@ -584,6 +659,10 @@ export function renderSankeyChart() {
   }
   
   Plotly.newPlot("sankeyChart", [sankeyData], layout, config).then(() => {
+    // Animate a brief "flow" effect after initial render
+    const phases = source.map((s, i) => ((target[i] - s) * 0.6) + i * 0.25);
+    setTimeout(() => startSankeyFlowAnimation(chartDiv, linkColors, phases), 200);
+
     setTimeout(() => {
       Plotly.Plots.resize(chartDiv);
       setTimeout(() => {
