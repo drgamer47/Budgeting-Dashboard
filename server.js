@@ -199,7 +199,7 @@ app.post('/api/transactions', async (req, res) => {
       end_date: req.body?.end_date
     });
     
-    const { access_token, start_date, end_date } = req.body;
+    const { access_token, start_date, end_date, account_ids } = req.body;
 
     if (!access_token) {
       console.error('Missing access_token in request body');
@@ -235,6 +235,12 @@ app.post('/api/transactions', async (req, res) => {
       },
     };
 
+    // Optional account filter (lets us exclude savings accounts from transaction imports)
+    if (Array.isArray(account_ids) && account_ids.length > 0) {
+      request.options.account_ids = account_ids;
+      console.log(`Filtering transactions to ${account_ids.length} account(s)`);
+    }
+
     let response;
     try {
       response = await client.transactionsGet(request);
@@ -265,6 +271,9 @@ app.post('/api/transactions', async (req, res) => {
           offset: allTransactions.length,
         },
       };
+      if (request.options.account_ids) {
+        paginatedRequest.options.account_ids = request.options.account_ids;
+      }
       
       try {
         const paginatedResponse = await client.transactionsGet(paginatedRequest);

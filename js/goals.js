@@ -63,16 +63,24 @@ export function renderSavingsGoals() {
   const goals = Array.isArray(data.savingsGoals) ? data.savingsGoals : [];
 
   goals.forEach(g => {
-    const percent = Math.min(100, (g.current / g.target) * 100);
+    const isReadOnly = !!g.readOnly || !!g.linkedBank;
+    const safeTarget = (g.target && g.target > 0) ? g.target : 1;
+    const percent = Math.min(100, ((g.current || 0) / safeTarget) * 100);
 
     const div = document.createElement("div");
     div.className = "goal-item";
-    div.innerHTML = `
-      <div class="goal-label"><b>${g.name}</b> — ${formatMoney(g.current)} / ${formatMoney(g.target)}</div>
-      <div class="goal-bar"><div class="goal-fill" style="width:${percent}%"></div></div>
+    const badge = isReadOnly ? '<span style="margin-left:8px; font-size:11px; color:var(--text-secondary); border:1px solid var(--border); padding:2px 6px; border-radius:999px;">Linked</span>' : '';
+    const buttons = isReadOnly
+      ? ''
+      : `
       <button data-id="${g.id}" class="addToSavingsBtn" style="margin-top:6px; background:var(--success); color:var(--text-primary);">Add to Savings</button>
       <button data-id="${g.id}" class="editGoalBtn" style="margin-left:6px;">Edit</button>
       <button data-id="${g.id}" class="deleteGoalBtn" style="margin-left:6px;">Delete</button>
+    `;
+    div.innerHTML = `
+      <div class="goal-label"><b>${g.name}</b>${badge} — ${formatMoney(g.current || 0)} / ${formatMoney(safeTarget)}</div>
+      <div class="goal-bar"><div class="goal-fill" style="width:${percent}%"></div></div>
+      ${buttons}
     `;
     list.appendChild(div);
   });
@@ -155,6 +163,10 @@ export async function editSavingsGoal(id) {
   const goals = stateManager.getActiveData().savingsGoals || [];
   const g = goals.find(x => x.id === id);
   if (!g) return;
+  if (g.readOnly || g.linkedBank) {
+    showToast('This goal is linked to a bank account and cannot be edited.', 'Info');
+    return;
+  }
 
   const name = prompt("Goal name:", g.name);
   if (!name) return;
@@ -213,6 +225,13 @@ export async function editSavingsGoal(id) {
  */
 export async function deleteSavingsGoal(id) {
   if (!confirm('Delete this savings goal?')) return;
+
+  const goals = stateManager.getActiveData().savingsGoals || [];
+  const g = goals.find(x => x.id === id);
+  if (g && (g.readOnly || g.linkedBank)) {
+    showToast('This goal is linked to a bank account and cannot be deleted.', 'Info');
+    return;
+  }
   
   if (useSupabase && goalService) {
     // Use Supabase
@@ -254,6 +273,10 @@ export function addToSavings(goalId) {
   const goals = stateManager.getActiveData().savingsGoals || [];
   const goal = goals.find(g => g.id === goalId);
   if (!goal) return;
+  if (goal.readOnly || goal.linkedBank) {
+    showToast('This goal is linked to a bank account and cannot be updated manually.', 'Info');
+    return;
+  }
 
   const amountStr = prompt(`Add to "${goal.name}" savings:\n\nCurrent: ${formatMoney(goal.current)}\nTarget: ${formatMoney(goal.target)}`, "");
   if (!amountStr) return;

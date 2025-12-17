@@ -1376,6 +1376,102 @@ export function getSettings() {
  */
 let plaidLink = null;
 
+function isSavingsLikePlaidAccount(account) {
+  const type = (account?.type || '').toLowerCase();
+  const subtype = (account?.subtype || '').toLowerCase();
+  if (type !== 'depository') return false;
+  return subtype === 'savings' || subtype === 'money market' || subtype === 'money_market' || subtype === 'cd';
+}
+
+function classifyPlaidAccounts(accounts = []) {
+  const transactionAccountIds = [];
+  const savingsAccountIds = [];
+
+  accounts.forEach(a => {
+    const id = a?.id;
+    if (!id) return;
+    if (isSavingsLikePlaidAccount(a)) {
+      savingsAccountIds.push(id);
+      return;
+    }
+    // Treat checking + credit card accounts as transaction sources
+    transactionAccountIds.push(id);
+  });
+
+  return { transactionAccountIds, savingsAccountIds };
+}
+
+async function fetchPlaidAccounts(access_token) {
+  const response = await fetch(`${API_BASE_URL}/accounts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ access_token })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    const errorMessage = errorData.error || errorData.message || `Server error: ${response.status}`;
+    throw new Error(errorMessage);
+  }
+
+  const { accounts } = await response.json();
+  return Array.isArray(accounts) ? accounts : [];
+}
+
+function upsertLinkedSavingsGoal(totalBalance, institutionName, accountCount) {
+  const data = stateManager.getActiveData();
+  if (!data.savingsGoals) data.savingsGoals = [];
+
+  const GOAL_ID = 'goal_linked_savings';
+  const existing = data.savingsGoals.find(g => g.id === GOAL_ID);
+  const name = institutionName ? `Linked Savings (${institutionName})` : 'Linked Savings';
+
+  // If no savings balance and no existing goal, don't add noise.
+  if ((!totalBalance || totalBalance <= 0) && !existing) return false;
+
+  if (existing) {
+    existing.name = name;
+    existing.current = totalBalance || 0;
+    // Keep target >= current so bar doesn't exceed 100%
+    existing.target = Math.max(existing.target || 0, existing.current || 0, 1);
+    existing.readOnly = true;
+    existing.linkedBank = true;
+    existing.linkedMeta = { institutionName: institutionName || null, accountCount: accountCount || 0 };
+  } else {
+    data.savingsGoals.unshift({
+      id: GOAL_ID,
+      name,
+      target: Math.max(totalBalance || 0, 1),
+      current: totalBalance || 0,
+      readOnly: true,
+      linkedBank: true,
+      linkedMeta: { institutionName: institutionName || null, accountCount: accountCount || 0 }
+    });
+  }
+
+  stateManager.saveState();
+  return true;
+}
+
+async function updateLinkedSavingsFromBank(access_token, savingsAccountIds, institutionName) {
+  if (!Array.isArray(savingsAccountIds) || savingsAccountIds.length === 0) return;
+
+  const accounts = await fetchPlaidAccounts(access_token);
+  const idSet = new Set(savingsAccountIds);
+  const savingsAccounts = accounts.filter(a => idSet.has(a.account_id));
+
+  const totalBalance = savingsAccounts.reduce((sum, a) => {
+    const b = a?.balances || {};
+    const n = (typeof b.current === 'number' ? b.current : (typeof b.available === 'number' ? b.available : 0));
+    return sum + (Number.isFinite(n) ? n : 0);
+  }, 0);
+
+  const updated = upsertLinkedSavingsGoal(totalBalance, institutionName, savingsAccounts.length);
+  if (updated) {
+    renderAll();
+  }
+}
+
 export async function connectBank() {
   try {
     const data = stateManager.getActiveData();
@@ -1410,6 +1506,9 @@ export async function connectBank() {
         });
 
         const { access_token, item_id } = await exchangeResponse.json();
+
+        const selectedAccounts = Array.isArray(metadata?.accounts) ? metadata.accounts : [];
+        const { transactionAccountIds, savingsAccountIds } = classifyPlaidAccounts(selectedAccounts);
         
         // Store access token (in a real app, you'd want to encrypt this)
         if (!data.bankConnections) data.bankConnections = [];
@@ -1417,12 +1516,17 @@ export async function connectBank() {
           item_id,
           access_token,
           institution: metadata.institution?.name || 'Unknown',
-          accounts: metadata.accounts
+          accounts: selectedAccounts,
+          transactionAccountIds,
+          savingsAccountIds
         });
         stateManager.saveState();
 
-        // Fetch and import transactions
-        await importBankTransactions(access_token);
+        // Update linked savings goal(s) from selected savings accounts
+        await updateLinkedSavingsFromBank(access_token, savingsAccountIds, metadata.institution?.name);
+
+        // Fetch and import transactions (checking + credit, excluding savings)
+        await importBankTransactions(access_token, { accountIds: transactionAccountIds });
         
         showToast(`Connected to ${metadata.institution?.name || 'bank'}`, TOAST_TYPES.BANK_CONNECTED);
       },
@@ -1455,6 +1559,13 @@ export async function connectBank() {
  */
 export async function importBankTransactions(access_token, retryCount = 0) {
   try {
+    // Backwards compatibility: allow passing options as 2nd arg
+    let options = {};
+    if (typeof retryCount === 'object' && retryCount !== null) {
+      options = retryCount;
+      retryCount = arguments.length >= 3 ? arguments[2] : 0;
+    }
+
     // Validate access_token
     if (!access_token) {
       throw new Error('Access token is required. Please reconnect your bank account.');
@@ -1486,6 +1597,9 @@ export async function importBankTransactions(access_token, retryCount = 0) {
       start_date: startDateStr,
       end_date: endDateStr
     };
+    if (Array.isArray(options.accountIds) && options.accountIds.length > 0) {
+      requestBody.account_ids = options.accountIds;
+    }
 
     logger.log('Request body:', { ...requestBody, access_token: access_token ? '***' : 'MISSING' });
 
@@ -1524,7 +1638,7 @@ export async function importBankTransactions(access_token, retryCount = 0) {
           );
 
           await new Promise(resolve => setTimeout(resolve, delay));
-          return importBankTransactions(access_token, retryCount + 1);
+          return importBankTransactions(access_token, options, retryCount + 1);
         }
 
         // Max retries reached
