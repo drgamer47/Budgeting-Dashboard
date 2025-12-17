@@ -25,77 +25,7 @@ import { renderRecurringTransactions } from './recurring.js';
 let categoryChart = null;
 let monthlyChart = null;
 let sankeyChartDiv = null;
-let resizeTimeout = null;
-let sankeyAnimRafId = null;
-
-function clamp01(n) {
-  return Math.max(0, Math.min(1, n));
-}
-
-function stopSankeyAnimation() {
-  if (sankeyAnimRafId) {
-    cancelAnimationFrame(sankeyAnimRafId);
-    sankeyAnimRafId = null;
-  }
-}
-
-/**
- * Animate the Sankey "drawing in" from left->right by staging link thickness:
- * 1) income sources -> Income
- * 2) Income -> categories
- * 3) categories -> descriptions
- */
-function startSankeyRevealAnimation(chartDiv, baseValues, linkLevels) {
-  if (!chartDiv || typeof Plotly === 'undefined') return;
-  if (!Array.isArray(baseValues) || baseValues.length === 0) return;
-
-  stopSankeyAnimation();
-
-  const d0 = 320;
-  const d1 = 320;
-  const d2 = 420;
-  const total = d0 + d1 + d2;
-  const startedAt = performance.now();
-  let lastPaint = 0;
-
-  const step = () => {
-    const t = performance.now() - startedAt;
-    // Throttle Plotly updates to ~30fps to keep it smooth/light
-    if (t - lastPaint >= 33) {
-      lastPaint = t;
-      const p0 = clamp01(t / d0);
-      const p1 = clamp01((t - d0) / d1);
-      const p2 = clamp01((t - d0 - d1) / d2);
-
-      const v = baseValues.map((val, i) => {
-        const level = linkLevels[i] || 0;
-        const scale = level === 0 ? p0 : (level === 1 ? p1 : p2);
-        return val * scale;
-      });
-
-      try {
-        Plotly.restyle(chartDiv, { 'link.value': [v] }, [0]);
-      } catch {
-        stopSankeyAnimation();
-        return;
-      }
-    }
-
-    if (t >= total) {
-      stopSankeyAnimation();
-      try {
-        Plotly.restyle(chartDiv, { 'link.value': [baseValues] }, [0]);
-      } catch {
-        // ignore
-      }
-      return;
-    }
-
-    sankeyAnimRafId = requestAnimationFrame(step);
-  };
-
-  sankeyAnimRafId = requestAnimationFrame(step);
-}
+let resizeTimeout = null; // chart resize debounce
 
 /**
  * Initialize UI renderers
@@ -377,9 +307,6 @@ export function renderMonthlyChart() {
 export function renderSankeyChart() {
   const chartDiv = document.getElementById("sankeyChart");
   if (!chartDiv || typeof Plotly === 'undefined') return;
-
-  // Prevent stacking animations across re-renders
-  stopSankeyAnimation();
   
   const isMobile = window.innerWidth <= MOBILE_BREAKPOINT;
   const isSmallMobile = window.innerWidth <= 480;
@@ -440,7 +367,6 @@ export function renderSankeyChart() {
 
   // Add income source nodes
   const incomeIndices = {};
-  let combinedIncomeIndex = -1;
   if (totalIncome > 0) {
     const sortedIncomeSources = Object.entries(incomeSources)
       .sort((a, b) => b[1] - a[1]);
@@ -452,7 +378,7 @@ export function renderSankeyChart() {
       nodeColors.push(CHART_COLORS.SANKEY_NODE);
     });
 
-    combinedIncomeIndex = labels.length;
+    const combinedIncomeIndex = labels.length;
     labels.push("Income");
     nodeColors.push("rgba(56, 189, 248, 0.7)");
 
@@ -658,18 +584,6 @@ export function renderSankeyChart() {
   }
   
   Plotly.newPlot("sankeyChart", [sankeyData], layout, config).then(() => {
-    // Animate a left->right "draw in" effect by staging link thickness.
-    // Only do this for the common income-flow case (3 levels).
-    if (combinedIncomeIndex >= 0 && value.length > 0) {
-      const linkLevels = source.map((s, i) => {
-        const t = target[i];
-        if (t === combinedIncomeIndex) return 0; // income sources -> Income
-        if (s === combinedIncomeIndex) return 1; // Income -> categories
-        return 2; // categories -> descriptions
-      });
-      setTimeout(() => startSankeyRevealAnimation(chartDiv, value, linkLevels), 120);
-    }
-
     setTimeout(() => {
       Plotly.Plots.resize(chartDiv);
       setTimeout(() => {
