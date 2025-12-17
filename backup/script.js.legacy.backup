@@ -1,0 +1,5200 @@
+/************************************************************
+  LEGACY CODE - This file is being phased out
+  New code should use the modular structure in /js directory
+  This file is kept for backward compatibility during migration
+************************************************************/
+
+/************************************************************
+  SUPABASE INTEGRATION & AUTHENTICATION
+  NOTE: This is now handled by supabase-integration.js and js/app.js
+************************************************************/
+
+// Import Supabase modules (will be loaded as modules)
+let supabaseAuth, supabaseServices, migrationUtil;
+let useSupabase = false; // Toggle between localStorage and Supabase
+let currentUser = null;
+let currentBudget = null;
+let realtimeChannels = {}; // Store real-time subscriptions
+let transactionService, categoryService, goalService, debtService, recurringService, realtimeService;
+
+// Initialize Supabase integration
+async function initSupabaseIntegration() {
+  try {
+    // Dynamic import for ES modules
+    const integration = await import('./supabase-integration.js');
+    const authenticated = await integration.initAuth();
+    
+    if (authenticated) {
+      currentUser = integration.currentUser;
+      currentBudget = integration.currentBudget;
+      if (typeof window !== 'undefined') {
+        window.currentBudget = currentBudget;
+      }
+      useSupabase = true;
+      
+      // Load Supabase services
+      try {
+        const services = await import('./supabase-browser.js');
+        transactionService = services.transactionService;
+        categoryService = services.categoryService;
+        goalService = services.goalService;
+        debtService = services.debtService;
+        recurringService = services.recurringService;
+        realtimeService = services.realtimeService;
+      } catch (e) {
+        // Fallback to module version
+        const services = await import('./supabase-service.js');
+        transactionService = services.transactionService;
+        categoryService = services.categoryService;
+        goalService = services.goalService;
+        debtService = services.debtService;
+        recurringService = services.recurringService;
+        realtimeService = services.realtimeService;
+      }
+      
+      console.log('✅ Supabase integration active');
+      
+      // Load data from Supabase
+      if (currentBudget) {
+        await loadDataFromSupabase();
+        setupRealtimeSubscriptions();
+      }
+      
+      // Make functions available globally
+      if (typeof window !== 'undefined') {
+        window.loadDataFromSupabase = loadDataFromSupabase;
+        window.setupRealtimeSubscriptions = setupRealtimeSubscriptions;
+      }
+      
+      return true;
+    }
+    return false;
+  } catch (error) {
+    console.warn('Supabase not configured, using localStorage:', error.message);
+    useSupabase = false;
+    return false;
+  }
+}
+
+// Load all data from Supabase for current budget
+async function loadDataFromSupabase() {
+  const budgetContext = (typeof window !== 'undefined' && window.currentBudget) ? window.currentBudget : currentBudget;
+  // Allow early load even if useSupabase flag not yet set, but require user + budget
+  if (!currentUser || !budgetContext) {
+    console.log('Skipping Supabase load:', { hasBudget: !!budgetContext, hasUser: !!currentUser });
+    return;
+  }
+  
+  console.log('[loadDataFromSupabase] start for budget:', budgetContext.id, budgetContext.name || '');
+  
+  try {
+    // Load transactions
+    const { data: transactions, error: txError } = await transactionService.getTransactions(budgetContext.id);
+    if (txError) {
+      console.error('Error loading transactions:', txError);
+    } else {
+      console.log('Loaded transactions from Supabase:', transactions?.length || 0);
+    }
+    
+    // Load categories
+    const { data: categories, error: catError } = await categoryService.getCategories(budgetContext.id);
+    if (catError) console.error('Error loading categories:', catError);
+    
+    // Load savings goals
+    const { data: savingsGoals, error: sgError } = await goalService.getSavingsGoals(budgetContext.id);
+    if (sgError) console.error('Error loading savings goals:', sgError);
+    
+    // Load financial goals
+    const { data: financialGoals, error: fgError } = await goalService.getFinancialGoals(budgetContext.id);
+    if (fgError) console.error('Error loading financial goals:', fgError);
+    
+    // Load debts
+    const { data: debts, error: debtError } = await debtService.getDebts(budgetContext.id);
+    if (debtError) console.error('Error loading debts:', debtError);
+    
+    // Load recurring transactions
+    const { data: recurringTransactions, error: recError } = await recurringService.getRecurringTransactions(budgetContext.id);
+    if (recError) console.error('Error loading recurring transactions:', recError);
+    
+    // Transform Supabase data to match localStorage format
+    const transformedTransactions = (transactions || []).map(t => ({
+      id: t.id,
+      date: t.date,
+      description: t.description,
+      amount: parseFloat(t.amount),
+      type: t.type,
+      categoryId: t.category_id || t.category?.id || t.categories?.id || 'other',
+      merchant: t.merchant || undefined,
+      note: t.notes || undefined,
+      userId: t.user_id,
+      user: t.user // Include user info for attribution
+    }));
+    
+    let transformedCategories = (categories || []).map(c => ({
+      id: c.id,
+      name: c.name,
+      color: c.color,
+      monthlyBudget: parseFloat(c.monthly_budget || 0)
+    }));
+    
+    // If no categories exist, create default ones
+    if (transformedCategories.length === 0 && categoryService) {
+      console.log('No categories found, creating default categories...');
+      const defaultCategories = [
+        { name: "Rent", color: "#f87171", monthly_budget: 1200 },
+        { name: "Groceries", color: "#4ade80", monthly_budget: 300 },
+        { name: "Transport", color: "#60a5fa", monthly_budget: 150 },
+        { name: "Fun", color: "#c084fc", monthly_budget: 200 },
+        { name: "Bills", color: "#facc15", monthly_budget: 250 },
+        { name: "Other", color: "#94a3b8", monthly_budget: 0 }
+      ];
+      
+      // Try to create categories (ignore conflicts - they may already exist)
+      for (const cat of defaultCategories) {
+        try {
+          const { data: newCat, error } = await categoryService.createCategory(currentBudget.id, cat);
+          // 409 Conflict or 23505 means category already exists, which is fine
+          if (error) {
+            const isConflict = error.code === '23505' || 
+                             error.code === 'PGRST204' || 
+                             error.status === 409 ||
+                             error.message?.includes('duplicate') ||
+                             error.message?.includes('unique') ||
+                             error.message?.includes('already exists');
+            if (!isConflict) {
+              console.warn('Error creating category:', cat.name, error);
+            }
+          }
+        } catch (err) {
+          // Ignore duplicate/conflict errors
+          const isConflict = err.code === '23505' || 
+                           err.code === 'PGRST204' ||
+                           err.status === 409 ||
+                           err.message?.includes('duplicate') ||
+                           err.message?.includes('unique');
+          if (!isConflict) {
+            console.error('Error creating default category:', err);
+          }
+        }
+      }
+      
+      // Reload categories from Supabase to get the actual data (whether just created or already existed)
+      const { data: reloadedCategories, error: reloadError } = await categoryService.getCategories(currentBudget.id);
+      if (!reloadError && reloadedCategories && reloadedCategories.length > 0) {
+        transformedCategories = reloadedCategories.map(c => ({
+          id: c.id,
+          name: c.name,
+          color: c.color,
+          monthlyBudget: parseFloat(c.monthly_budget || 0)
+        }));
+        console.log('Loaded', transformedCategories.length, 'categories from Supabase after creation');
+      } else {
+        console.warn('Failed to reload categories after creation:', reloadError);
+      }
+    }
+    
+    const transformedSavingsGoals = (savingsGoals || []).map(g => ({
+      id: g.id,
+      name: g.name,
+      target: parseFloat(g.target),
+      current: parseFloat(g.current || 0)
+    }));
+    
+    const transformedFinancialGoals = (financialGoals || []).map(g => ({
+      id: g.id,
+      name: g.name,
+      type: g.type,
+      target: parseFloat(g.target),
+      current: parseFloat(g.current || 0),
+      targetDate: g.target_date || undefined
+    }));
+    
+    const transformedDebts = (debts || []).map(d => ({
+      id: d.id,
+      name: d.name,
+      currentBalance: parseFloat(d.current_balance),
+      originalBalance: parseFloat(d.original_balance || d.current_balance),
+      interestRate: parseFloat(d.interest_rate || 0),
+      minPayment: parseFloat(d.min_payment || 0),
+      targetDate: d.target_date || undefined
+    }));
+    
+    const transformedRecurring = (recurringTransactions || []).map(r => ({
+      id: r.id,
+      description: r.description,
+      amount: parseFloat(r.amount),
+      type: r.type,
+      categoryId: r.category_id || r.category?.id || 'other',
+      frequency: r.frequency,
+      nextDate: r.next_date
+    }));
+    
+    // Update state with Supabase data
+    const budgetDataKey = budgetContext.id;
+    console.log('Updating state with Supabase data:', {
+      transactions: transformedTransactions.length,
+      categories: transformedCategories.length,
+      savingsGoals: transformedSavingsGoals.length
+    });
+    
+    if (!state.dataByProfile[budgetDataKey]) {
+      state.dataByProfile[budgetDataKey] = {
+        categories: transformedCategories.length > 0 ? transformedCategories : JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)),
+        transactions: transformedTransactions,
+        savingsGoals: transformedSavingsGoals,
+        financialGoals: transformedFinancialGoals,
+        debts: transformedDebts,
+        recurringTransactions: transformedRecurring,
+        lastImportBatchIds: []
+      };
+    } else {
+      state.dataByProfile[budgetDataKey].transactions = transformedTransactions;
+      state.dataByProfile[budgetDataKey].categories = transformedCategories.length > 0 ? transformedCategories : state.dataByProfile[budgetDataKey].categories;
+      state.dataByProfile[budgetDataKey].savingsGoals = transformedSavingsGoals;
+      state.dataByProfile[budgetDataKey].financialGoals = transformedFinancialGoals;
+      state.dataByProfile[budgetDataKey].debts = transformedDebts;
+      state.dataByProfile[budgetDataKey].recurringTransactions = transformedRecurring;
+    }
+    
+    // Set active profile to budget ID for compatibility
+    state.activeProfileId = budgetDataKey;
+    
+    console.log('[loadDataFromSupabase] State updated for budget', budgetDataKey, 'transactions:', getActiveData().transactions.length);
+    
+    // Render UI after data is loaded
+    if (typeof renderAll === 'function') {
+      console.log('[loadDataFromSupabase] Calling renderAll()...');
+      renderAll();
+    } else {
+      console.warn('[loadDataFromSupabase] renderAll() function not available!');
+    }
+    console.log('[loadDataFromSupabase] complete for budget:', budgetDataKey);
+    return {
+      transactions: transformedTransactions,
+      categories: transformedCategories,
+      savingsGoals: transformedSavingsGoals,
+      financialGoals: transformedFinancialGoals,
+      debts: transformedDebts,
+      recurring: transformedRecurring
+    };
+  } catch (error) {
+    console.error('[loadDataFromSupabase] Error loading data from Supabase:', error);
+    throw error;
+  }
+}
+
+// Setup real-time subscriptions for shared budgets
+function setupRealtimeSubscriptions() {
+  const budgetContext = (typeof window !== 'undefined' && window.currentBudget) ? window.currentBudget : currentBudget;
+  if (!useSupabase || !budgetContext || budgetContext.type !== 'shared') {
+    // Unsubscribe from any existing channels
+    Object.values(realtimeChannels).forEach(channel => {
+      if (channel) realtimeService?.unsubscribe(channel);
+    });
+    realtimeChannels = {};
+    console.log('[realtime] unsubscribed (not shared or no budget)');
+    return;
+  }
+  
+  // Unsubscribe from previous budget's channels
+  Object.values(realtimeChannels).forEach(channel => {
+    if (channel) realtimeService?.unsubscribe(channel);
+  });
+  realtimeChannels = {};
+  console.log('[realtime] subscribing for budget', budgetContext.id);
+  
+  // Subscribe to transactions
+  if (realtimeService) {
+    realtimeChannels.transactions = realtimeService.subscribeToTransactions(budgetContext.id, (payload) => {
+      handleRealtimeUpdate('transactions', payload);
+    });
+
+    // Members (for shared budgets)
+    realtimeChannels.members = realtimeService.subscribeToMembers(budgetContext.id, (payload) => {
+      handleRealtimeUpdate('members', payload);
+    });
+    
+    realtimeChannels.categories = realtimeService.subscribeToCategories(budgetContext.id, (payload) => {
+      handleRealtimeUpdate('categories', payload);
+    });
+    
+    realtimeChannels.goals = realtimeService.subscribeToGoals(budgetContext.id, (payload) => {
+      handleRealtimeUpdate('goals', payload);
+    });
+  }
+}
+
+// Handle real-time updates
+function handleRealtimeUpdate(type, payload) {
+  const { eventType, new: newRecord, old: oldRecord } = payload;
+  console.log('[realtime]', type, eventType, { newRecord, oldRecord });
+  
+  if (type === 'transactions') {
+    if (eventType === 'INSERT') {
+      const user = newRecord.user || {};
+      const userName = user.display_name || user.username || 'Someone';
+      showToast(`${userName} added a transaction`, 'Update');
+      loadDataFromSupabase().then(() => renderAll());
+    } else if (eventType === 'UPDATE') {
+      showToast('Transaction updated', 'Update');
+      loadDataFromSupabase().then(() => renderAll());
+    } else if (eventType === 'DELETE') {
+      showToast('Transaction deleted', 'Update');
+      loadDataFromSupabase().then(() => renderAll());
+    }
+  } else if (type === 'members') {
+    if (eventType === 'INSERT') {
+      showToast('A new member joined this budget', 'Update');
+    } else if (eventType === 'DELETE') {
+      showToast('A member was removed from this budget', 'Update');
+    } else if (eventType === 'UPDATE') {
+      showToast('Budget member updated', 'Update');
+    }
+    // Reload members & budgets so all clients see the change
+    loadDataFromSupabase().then(() => renderAll());
+  } else if (type === 'categories') {
+    showToast('Categories updated', 'Update');
+    loadDataFromSupabase().then(() => renderAll());
+  } else if (type === 'goals') {
+    showToast('Goals updated', 'Update');
+    loadDataFromSupabase().then(() => renderAll());
+  }
+}
+
+/************************************************************
+  STATE + PROFILE SYSTEM + HELPERS
+************************************************************/
+
+// Default categories for new profiles
+const DEFAULT_CATEGORIES = [
+  { id: "rent", name: "Rent", color: "#f87171", monthlyBudget: 1200 },
+  { id: "groceries", name: "Groceries", color: "#4ade80", monthlyBudget: 300 },
+  { id: "transport", name: "Transport", color: "#60a5fa", monthlyBudget: 150 },
+  { id: "fun", name: "Fun", color: "#c084fc", monthlyBudget: 200 },
+  { id: "bills", name: "Bills", color: "#facc15", monthlyBudget: 250 },
+  { id: "other", name: "Other", color: "#94a3b8", monthlyBudget: 0 }
+];
+
+// Master state with full profile isolation
+let state = {
+  profiles: [
+    { id: "p_default", name: "Default" }
+  ],
+  activeProfileId: "p_default",
+  dataByProfile: {
+    p_default: {
+      categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)),
+      transactions: [],
+      savingsGoals: [],
+      lastImportBatchIds: [],
+      recurringTransactions: [],
+      debts: [],
+      financialGoals: []
+    }
+  }
+};
+
+/* ---------- Load / Save ---------- */
+
+function saveState() {
+  localStorage.setItem("budgetDashboardState_v2_profiles", JSON.stringify(state));
+}
+
+function loadState() {
+  // Don't load from localStorage if using Supabase
+  // Supabase data is loaded via loadDataFromSupabase()
+  if (useSupabase) {
+    console.log('Skipping localStorage load - using Supabase');
+    return;
+  }
+  
+  const raw = localStorage.getItem("budgetDashboardState_v2_profiles");
+  if (!raw) {
+    saveState();
+    return;
+  }
+  try {
+    state = JSON.parse(raw);
+
+    // Ensure structural integrity
+    if (!state.dataByProfile) state.dataByProfile = {};
+    if (!state.profiles) state.profiles = [{ id: "p_default", name: "Default" }];
+    if (!state.activeProfileId) state.activeProfileId = state.profiles[0].id;
+
+    // Ensure each profile has all sections
+    for (let p of state.profiles) {
+      if (!state.dataByProfile[p.id]) {
+        state.dataByProfile[p.id] = {
+          categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)),
+          transactions: [],
+          savingsGoals: [],
+          lastImportBatchIds: [],
+          recurringTransactions: [],
+          debts: [],
+          financialGoals: []
+        };
+      }
+    }
+
+  } catch (e) {
+    console.error("State load failed, resetting:", e);
+    state = {
+      profiles: [{ id: "p_default", name: "Default" }],
+      activeProfileId: "p_default",
+      dataByProfile: {
+        p_default: {
+          categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)),
+          transactions: [],
+          savingsGoals: [],
+          lastImportBatchIds: [],
+          recurringTransactions: [],
+          debts: [],
+          financialGoals: []
+        }
+      }
+    };
+    saveState();
+  }
+}
+
+// loadState() is now called in initApp() after checking for Supabase
+// Don't call it here to avoid race conditions
+
+/* ---------- Profile Helper Accessors ---------- */
+
+function getActiveProfileId() {
+  return state.activeProfileId;
+}
+
+function getActiveData() {
+  const key = getActiveProfileId();
+  const data = state.dataByProfile[key];
+  if (data) return data;
+  // Fallback safe empty structure
+  return {
+    categories: [],
+    transactions: [],
+    savingsGoals: [],
+    financialGoals: [],
+    debts: [],
+    recurringTransactions: [],
+    lastImportBatchIds: []
+  };
+}
+
+function setActiveData(data) {
+  state.dataByProfile[getActiveProfileId()] = data;
+  saveState();
+}
+
+function switchProfile(profileId) {
+  state.activeProfileId = profileId;
+  saveState();
+  renderAll();
+}
+
+function createNewProfile(name = "New Profile") {
+  const newId = "p_" + Math.random().toString(36).slice(2);
+  state.profiles.push({ id: newId, name });
+
+  state.dataByProfile[newId] = {
+    categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)),
+    transactions: [],
+    savingsGoals: [],
+    lastImportBatchIds: [],
+    recurringTransactions: [],
+    debts: [],
+    financialGoals: []
+  };
+
+  state.activeProfileId = newId;
+  saveState();
+  renderAll();
+}
+
+/* ---------- Utility Helpers ---------- */
+
+// Helper to check if a string is a valid UUID
+function isValidUUID(str) {
+  if (!str || typeof str !== 'string') return false;
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(str);
+}
+
+
+function showToast(message, title = "") {
+  const box = document.getElementById("toastContainer");
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.textContent = (title ? title + ": " : "") + message;
+  box.appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = 0;
+    setTimeout(() => box.removeChild(el), 500);
+  }, 3000);
+}
+
+/* ---------- Mobile Detection & Haptic Feedback ---------- */
+
+function isMobileDevice() {
+  return window.innerWidth <= 768 || 
+         'ontouchstart' in window || 
+         navigator.maxTouchPoints > 0 ||
+         /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+}
+
+function triggerHapticFeedback() {
+  // Try to trigger haptic feedback if available
+  if (navigator.vibrate) {
+    navigator.vibrate(50); // Short vibration
+  }
+  
+  // iOS haptic feedback (if available)
+  if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function') {
+    // iOS 13+ requires permission, but we can try
+    try {
+      if (window.TapticEngine) {
+        window.TapticEngine.impact({ style: 'medium' });
+      }
+    } catch (e) {
+      // Ignore if not available
+    }
+  }
+}
+
+/* ---------- Long-Press Detection ---------- */
+
+function startLongPress(element, transactionId, startX, startY) {
+  // Don't start long-press if already in edit mode
+  if (isSelectionMode && selectionModeType === 'edit') {
+    return;
+  }
+  
+  // Don't start if already in delete mode
+  if (isSelectionMode && selectionModeType === 'delete') {
+    return;
+  }
+  
+  // Cancel any existing long-press
+  cancelLongPress();
+  
+  longPressElement = element;
+  longPressStartPos = { x: startX, y: startY };
+  isLongPressing = false;
+  
+  // Add visual feedback class
+  element.classList.add('long-press-active');
+  
+  longPressTimer = setTimeout(() => {
+    if (longPressElement === element && !isLongPressing) {
+      isLongPressing = true;
+      activateDeleteModeFromLongPress(transactionId);
+      element.classList.remove('long-press-active');
+      element.classList.add('long-press-complete');
+      setTimeout(() => {
+        element.classList.remove('long-press-complete');
+      }, 200);
+    }
+  }, LONG_PRESS_DURATION);
+}
+
+function cancelLongPress() {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+  
+  if (longPressElement) {
+    longPressElement.classList.remove('long-press-active', 'long-press-complete');
+    longPressElement = null;
+  }
+  
+  longPressStartPos = null;
+  isLongPressing = false;
+}
+
+function checkLongPressMove(currentX, currentY) {
+  if (!longPressStartPos) return false;
+  
+  const deltaX = Math.abs(currentX - longPressStartPos.x);
+  const deltaY = Math.abs(currentY - longPressStartPos.y);
+  const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+  
+  // If moved too far, cancel the long-press (user is scrolling)
+  if (distance > LONG_PRESS_MOVE_THRESHOLD) {
+    cancelLongPress();
+    return true; // Indicates movement detected
+  }
+  
+  return false;
+}
+
+function activateDeleteModeFromLongPress(transactionId) {
+  // Trigger haptic feedback
+  triggerHapticFeedback();
+  
+  // Enter delete mode
+  isSelectionMode = true;
+  selectionModeType = 'delete';
+  
+  // Show/hide UI elements
+  document.getElementById("editModeBtn").style.display = "none";
+  document.getElementById("deleteModeBtn").style.display = "none";
+  document.getElementById("cancelSelectionBtn").style.display = "inline-block";
+  document.getElementById("checkboxHeader").style.display = "table-cell";
+  document.getElementById("selectionActionsBar").style.display = "none";
+  document.getElementById("editModeIndicator").style.display = "none";
+  
+  // Remove edit mode class if present
+  const tableBox = document.querySelector("#tab-transactions .table-box");
+  if (tableBox) {
+    tableBox.classList.remove('edit-mode');
+  }
+  
+  // Automatically select the long-pressed transaction
+  selectedTransactionIds.clear();
+  selectedTransactionIds.add(transactionId);
+  
+  // Update UI
+  renderTransactionsTable();
+  updateSelectionUI();
+  
+  // Show toast notification
+  showToast("Delete mode activated. Tap to select more transactions.", "Long-press");
+}
+
+function formatMoney(n) {
+  const symbol = settings?.currencySymbol || '$';
+  return symbol + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function formatDate(dateStr) {
+  if (!dateStr) return '';
+  
+  // Parse YYYY-MM-DD format
+  const parts = dateStr.split('-');
+  if (parts.length !== 3) return dateStr; // Return as-is if not in expected format
+  
+  const year = parts[0];
+  const month = parts[1];
+  const day = parts[2];
+  
+  const format = settings?.dateFormat || 'YYYY-MM-DD';
+  
+  switch (format) {
+    case 'MM/DD/YYYY':
+      return `${month}/${day}/${year}`;
+    case 'DD/MM/YYYY':
+      return `${day}/${month}/${year}`;
+    case 'YYYY-MM-DD':
+    default:
+      return dateStr;
+  }
+}
+
+function currentMonthISO(dateObj) {
+  const y = dateObj.getFullYear();
+  const m = (dateObj.getMonth() + 1).toString().padStart(2, "0");
+  return `${y}-${m}`;
+}
+
+let viewedMonth = currentMonthISO(new Date());
+let showAllMonths = false;
+let selectedTransactionIds = new Set();
+let isSelectionMode = false;
+let selectionModeType = null; // 'edit' or 'delete'
+
+// Table sorting state
+let sortColumn = 'date';
+let sortDirection = 'desc'; // 'asc' or 'desc'
+
+// Long-press detection state
+let longPressTimer = null;
+let longPressElement = null;
+let longPressStartPos = null;
+let isLongPressing = false;
+const LONG_PRESS_DURATION = 600; // milliseconds
+const LONG_PRESS_MOVE_THRESHOLD = 10; // pixels - cancel if moved more than this
+
+/* ---------- Render Month/Year Selectors ---------- */
+
+function updateMonthYearSelectors() {
+  const [year, month] = viewedMonth.split("-");
+  const monthSelect = document.getElementById("monthSelect");
+  const yearSelect = document.getElementById("yearSelect");
+  
+  if (monthSelect) {
+    monthSelect.value = month;
+  }
+  
+  if (yearSelect) {
+    // Populate year dropdown (current year ± 5 years)
+    const currentYear = new Date().getFullYear();
+    yearSelect.innerHTML = '';
+    for (let y = currentYear - 5; y <= currentYear + 5; y++) {
+      const option = document.createElement('option');
+      option.value = y;
+      option.textContent = y;
+      yearSelect.appendChild(option);
+    }
+    yearSelect.value = year;
+  }
+}
+
+function handleMonthYearChange() {
+  const monthSelect = document.getElementById("monthSelect");
+  const yearSelect = document.getElementById("yearSelect");
+  
+  if (monthSelect && yearSelect) {
+    const month = monthSelect.value;
+    const year = yearSelect.value;
+    viewedMonth = `${year}-${month}`;
+    // Exit selection mode when changing month
+    if (isSelectionMode) {
+      exitSelectionMode();
+    }
+    renderAll();
+  }
+}
+
+/* ---------- Navigation (kept for compatibility, but replaced by dropdowns) ---------- */
+
+/* ---------- Filter UI ---------- */
+
+function getFilteredTransactions() {
+  const data = getActiveData() || {};
+  const transactions = Array.isArray(data.transactions) ? data.transactions : [];
+  let tx = transactions.slice();
+
+  if (!showAllMonths && viewedMonth) {
+    tx = tx.filter(t => t.date.startsWith(viewedMonth));
+  }
+
+  const searchBox = document.getElementById("searchBox");
+  const search = searchBox ? searchBox.value.toLowerCase().trim() : "";
+  if (search) tx = tx.filter(t => (t.description || "").toLowerCase().includes(search));
+
+  const typeSelect = document.getElementById("filterType");
+  const typeFilter = typeSelect ? typeSelect.value : "";
+  if (typeFilter) tx = tx.filter(t => t.type === typeFilter);
+
+  const catSelect = document.getElementById("filterCategory");
+  const catFilter = catSelect ? catSelect.value : "";
+  if (catFilter) tx = tx.filter(t => t.categoryId === catFilter);
+
+  // Apply sorting
+  tx.sort((a, b) => {
+    let aVal, bVal;
+    
+    switch (sortColumn) {
+      case 'date':
+        aVal = a.date;
+        bVal = b.date;
+        break;
+      case 'description':
+        aVal = a.description.toLowerCase();
+        bVal = b.description.toLowerCase();
+        break;
+      case 'type':
+        aVal = a.type;
+        bVal = b.type;
+        break;
+      case 'category':
+        const catA = data.categories.find(c => c.id === a.categoryId);
+        const catB = data.categories.find(c => c.id === b.categoryId);
+        aVal = catA ? catA.name.toLowerCase() : '';
+        bVal = catB ? catB.name.toLowerCase() : '';
+        break;
+      case 'amount':
+        aVal = a.amount;
+        bVal = b.amount;
+        break;
+      default:
+        aVal = a.date;
+        bVal = b.date;
+    }
+    
+    if (aVal < bVal) return sortDirection === 'asc' ? -1 : 1;
+    if (aVal > bVal) return sortDirection === 'asc' ? 1 : -1;
+    return 0;
+  });
+
+  return tx;
+}
+
+function sortTable(column) {
+  // If clicking the same column, toggle direction
+  if (sortColumn === column) {
+    sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+  } else {
+    sortColumn = column;
+    sortDirection = 'asc';
+  }
+  
+  renderTransactionsTable();
+  updateSortIndicators();
+}
+
+function updateSortIndicators() {
+  // Remove all sort indicators
+  document.querySelectorAll('.sort-indicator').forEach(ind => {
+    ind.textContent = '';
+    ind.className = 'sort-indicator';
+  });
+  
+  // Add indicator to active column
+  const activeHeader = document.querySelector(`th[data-sort="${sortColumn}"]`);
+  if (activeHeader) {
+    const indicator = activeHeader.querySelector('.sort-indicator');
+    if (indicator) {
+      indicator.textContent = sortDirection === 'asc' ? ' ▲' : ' ▼';
+      indicator.className = 'sort-indicator active';
+    }
+  }
+}
+
+/************************************************************
+  RENDERING + CHARTS + DRAWER + PROFILES
+************************************************************/
+
+/* ---------- Render Profile Menu ---------- */
+function renderProfileSelector() {
+  const activeProfile = state.profiles.find(p => p.id === state.activeProfileId);
+  if (!activeProfile) return;
+
+  // Update profile name in header
+  const profileName = document.getElementById("currentProfileName");
+  if (profileName) {
+    profileName.textContent = activeProfile.name;
+  }
+
+  // Update profile initial
+  const profileInitial = document.getElementById("profileInitial");
+  if (profileInitial) {
+    profileInitial.textContent = activeProfile.name.charAt(0).toUpperCase();
+  }
+
+  // Render profile list
+  const profileList = document.getElementById("profileList");
+  if (!profileList) return;
+
+  profileList.innerHTML = "";
+  state.profiles.forEach(p => {
+    const btn = document.createElement("button");
+    btn.className = "profile-item" + (p.id === state.activeProfileId ? " active" : "");
+    btn.innerHTML = `
+      <span>${p.name}</span>
+      ${p.id === state.activeProfileId ? '<span class="profile-item-check">✓</span>' : ''}
+    `;
+    btn.addEventListener("click", () => {
+      switchProfile(p.id);
+      closeProfileMenu();
+    });
+    profileList.appendChild(btn);
+  });
+}
+
+function closeProfileMenu() {
+  const menu = document.querySelector(".profile-menu");
+  if (menu) {
+    menu.classList.remove("active");
+  }
+}
+
+/* ---------- Render Categories Dropdowns ---------- */
+function renderCategoryFilters() {
+  const data = getActiveData() || {};
+  const categories = Array.isArray(data.categories) ? data.categories : [];
+  const catSel = document.getElementById("filterCategory");
+  const drawerCat = document.getElementById("drawerCategory");
+
+  if (!catSel || !drawerCat) return;
+
+  catSel.innerHTML = `<option value="">Category: All</option>`;
+  drawerCat.innerHTML = "";
+
+  categories.forEach(c => {
+    const o1 = document.createElement("option");
+    o1.value = c.id;
+    o1.textContent = c.name;
+    catSel.appendChild(o1);
+
+    const o2 = document.createElement("option");
+    o2.value = c.id;
+    o2.textContent = c.name;
+    drawerCat.appendChild(o2);
+  });
+}
+
+/* ---------- Render KPIs ---------- */
+function renderKpis() {
+  const tx = getFilteredTransactions();
+
+  let income = 0, expense = 0;
+
+  tx.forEach(t => {
+    if (t.type === "income") income += t.amount;
+    else expense += t.amount;
+  });
+
+  const net = income - expense;
+
+  document.getElementById("kpiIncome").textContent = formatMoney(income);
+  document.getElementById("kpiExpenses").textContent = formatMoney(expense);
+  document.getElementById("kpiNet").textContent = formatMoney(net);
+
+  // Savings = sum of all goals current stored amount
+  const data = getActiveData() || {};
+  const goals = Array.isArray(data.savingsGoals) ? data.savingsGoals : [];
+  const totalSaved = goals.reduce((s, g) => s + (g.current || 0), 0);
+  document.getElementById("kpiSavings").textContent = formatMoney(totalSaved);
+}
+
+/* ---------- Render Transactions Table ---------- */
+function renderTransactionsTable() {
+  const body = document.getElementById("transactionsTableBody");
+  const cardsContainer = document.getElementById("transactionsCardsContainer");
+  
+  if (body) body.innerHTML = "";
+  if (cardsContainer) cardsContainer.innerHTML = "";
+
+  const tx = getFilteredTransactions();
+  const data = getActiveData() || {};
+  const categories = Array.isArray(data.categories) ? data.categories : [];
+  const isMobile = window.innerWidth <= 768;
+
+  tx.forEach(t => {
+    const cat = categories.find(c => c.id === t.categoryId);
+    const isSelected = selectedTransactionIds.has(t.id);
+
+    if (isMobile) {
+      // Mobile: Card layout
+      const card = document.createElement("div");
+      card.className = "transaction-card-mobile";
+      card.dataset.transactionId = t.id;
+      
+      if (isSelectionMode && selectionModeType === 'edit') {
+        card.classList.add('editable-row');
+      }
+
+      // Build checkbox HTML if in delete mode
+      const checkboxHTML = (isSelectionMode && selectionModeType === 'delete') ? `
+        <div class="transaction-checkbox-wrapper">
+          <input type="checkbox" class="transaction-checkbox" data-id="${t.id}" ${isSelected ? 'checked' : ''} id="checkbox-${t.id}">
+          <label for="checkbox-${t.id}" class="transaction-checkbox-label"></label>
+        </div>
+      ` : '';
+
+      // User attribution for shared budgets
+      const userAttribution = (useSupabase && currentBudget && currentBudget.type === 'shared' && t.user) 
+        ? `<span class="transaction-user-attribution" title="Added by ${t.user.display_name || t.user.username || 'Unknown'}">👤 ${t.user.display_name || t.user.username || 'Unknown'}</span>`
+        : '';
+      
+      let cardHTML = `
+        <div class="transaction-card-header">
+          ${checkboxHTML}
+          <div class="transaction-card-content">
+            <div class="transaction-card-top-row">
+              <div class="transaction-card-date">${formatDate(t.date)}</div>
+              <div class="transaction-card-amount">${formatMoney(t.amount)}</div>
+            </div>
+            <div class="transaction-card-description">${t.description}</div>
+          </div>
+        </div>
+        <div class="transaction-card-details">
+          <span class="transaction-card-badge badge-${t.type}">${t.type}</span>
+          <span class="transaction-card-category">${cat ? cat.name : "—"}</span>
+          ${t.merchant ? `<span class="transaction-card-merchant">📍 ${t.merchant}</span>` : ''}
+          ${userAttribution}
+      `;
+
+      cardHTML += '</div>';
+      card.innerHTML = cardHTML;
+
+      // Prevent context menu on long-press (for mobile dev tools and testing)
+      card.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+      });
+
+      // Add click handler for edit mode
+      if (isSelectionMode && selectionModeType === 'edit') {
+        card.addEventListener('click', () => {
+          openDrawerForEdit(t.id);
+          exitSelectionMode();
+        });
+      }
+
+      // Add long-press detection for mobile (only when not in any selection mode)
+      if (isMobileDevice() && !isSelectionMode) {
+        let touchStartX = 0;
+        let touchStartY = 0;
+        let touchStartTime = 0;
+        let hasMoved = false;
+        
+        card.addEventListener('touchstart', (e) => {
+          touchStartX = e.touches[0].clientX;
+          touchStartY = e.touches[0].clientY;
+          touchStartTime = Date.now();
+          hasMoved = false;
+          startLongPress(card, t.id, touchStartX, touchStartY);
+        }, { passive: true });
+        
+        card.addEventListener('touchmove', (e) => {
+          if (!hasMoved && checkLongPressMove(e.touches[0].clientX, e.touches[0].clientY)) {
+            // Long-press was cancelled due to movement (user is scrolling)
+            hasMoved = true;
+            return;
+          }
+          // Update position for continued movement tracking
+          if (!hasMoved) {
+            checkLongPressMove(e.touches[0].clientX, e.touches[0].clientY);
+          }
+        }, { passive: true });
+        
+        card.addEventListener('touchend', (e) => {
+          const touchDuration = Date.now() - touchStartTime;
+          
+          // Cancel long-press if user moved (scrolled)
+          if (hasMoved) {
+            cancelLongPress();
+            return;
+          }
+          
+          // If it was a quick tap (not long-press), handle as normal
+          if (touchDuration < LONG_PRESS_DURATION) {
+            cancelLongPress();
+          } else {
+            // Long-press completed
+            cancelLongPress();
+          }
+        }, { passive: true });
+        
+        card.addEventListener('touchcancel', () => {
+          cancelLongPress();
+          hasMoved = false;
+        }, { passive: true });
+      }
+
+      if (cardsContainer) {
+        cardsContainer.appendChild(card);
+      }
+    } else {
+      // Desktop: Table layout
+      const tr = document.createElement("tr");
+      tr.dataset.transactionId = t.id;
+
+      // Build row HTML - only show checkbox if in delete mode
+      let rowHTML = '';
+      if (isSelectionMode && selectionModeType === 'delete') {
+        rowHTML += `<td class="checkbox-cell"><div class="transaction-checkbox-wrapper"><input type="checkbox" class="transaction-checkbox" data-id="${t.id}" ${isSelected ? 'checked' : ''} id="checkbox-${t.id}"><label for="checkbox-${t.id}" class="transaction-checkbox-label"></label></div></td>`;
+      }
+      
+      // User attribution for shared budgets
+      const userAttribution = (useSupabase && currentBudget && currentBudget.type === 'shared' && t.user) 
+        ? `<span class="transaction-user-attribution" title="Added by ${t.user.display_name || t.user.username || 'Unknown'}">👤 ${t.user.display_name || t.user.username || 'Unknown'}</span>`
+        : '';
+      
+      rowHTML += `
+        <td>${formatDate(t.date)}</td>
+        <td>${t.description}${t.merchant ? `<span class="merchant-badge">${t.merchant}</span>` : ''}${userAttribution}</td>
+        <td><span class="badge-${t.type}">${t.type}</span></td>
+        <td>${cat ? cat.name : "—"}</td>
+        <td>${formatMoney(t.amount)}</td>
+      `;
+
+      tr.innerHTML = rowHTML;
+      
+      // Prevent context menu on long-press (for mobile dev tools and testing)
+      tr.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+      });
+      
+      // Add click handler for edit mode
+      if (isSelectionMode && selectionModeType === 'edit') {
+        tr.classList.add('editable-row');
+        tr.style.cursor = 'pointer';
+        tr.addEventListener('click', (e) => {
+          // Don't trigger if clicking on a badge or other interactive element
+          if (e.target.tagName === 'SPAN' && (e.target.classList.contains('badge-income') || 
+              e.target.classList.contains('badge-expense') ||
+              e.target.classList.contains('merchant-badge'))) {
+            return;
+          }
+          openDrawerForEdit(t.id);
+          exitSelectionMode();
+        });
+      }
+      
+      // Add long-press detection for mobile table rows (only when not in any selection mode)
+      if (isMobileDevice() && !isSelectionMode) {
+        let touchStartX = 0;
+        let touchStartY = 0;
+        let touchStartTime = 0;
+        let hasMoved = false;
+        
+        tr.addEventListener('touchstart', (e) => {
+          touchStartX = e.touches[0].clientX;
+          touchStartY = e.touches[0].clientY;
+          touchStartTime = Date.now();
+          hasMoved = false;
+          startLongPress(tr, t.id, touchStartX, touchStartY);
+        }, { passive: true });
+        
+        tr.addEventListener('touchmove', (e) => {
+          if (!hasMoved && checkLongPressMove(e.touches[0].clientX, e.touches[0].clientY)) {
+            // Long-press was cancelled due to movement (user is scrolling)
+            hasMoved = true;
+            return;
+          }
+          // Update position for continued movement tracking
+          if (!hasMoved) {
+            checkLongPressMove(e.touches[0].clientX, e.touches[0].clientY);
+          }
+        }, { passive: true });
+        
+        tr.addEventListener('touchend', (e) => {
+          const touchDuration = Date.now() - touchStartTime;
+          
+          // Cancel long-press if user moved (scrolled)
+          if (hasMoved) {
+            cancelLongPress();
+            return;
+          }
+          
+          // If it was a quick tap (not long-press), handle as normal
+          if (touchDuration < LONG_PRESS_DURATION) {
+            cancelLongPress();
+          } else {
+            // Long-press completed
+            cancelLongPress();
+          }
+        }, { passive: true });
+        
+        tr.addEventListener('touchcancel', () => {
+          cancelLongPress();
+          hasMoved = false;
+        }, { passive: true });
+      }
+      
+      body.appendChild(tr);
+    }
+  });
+
+  // Add checkbox listeners (for both mobile cards and desktop table)
+  document.querySelectorAll(".transaction-checkbox").forEach(cb => {
+    cb.addEventListener("change", (e) => {
+      e.stopPropagation(); // Prevent row/card click
+      const id = e.target.dataset.id;
+      if (e.target.checked) {
+        selectedTransactionIds.add(id);
+      } else {
+        selectedTransactionIds.delete(id);
+      }
+      updateSelectionUI();
+    });
+    
+    // Also handle label clicks
+    const label = cb.nextElementSibling;
+    if (label && label.classList.contains('transaction-checkbox-label')) {
+      label.addEventListener("click", (e) => {
+        e.stopPropagation(); // Prevent row/card click
+      });
+    }
+  });
+  
+  // Update sort indicators (desktop only)
+  if (!isMobile) {
+    updateSortIndicators();
+    
+    // Update select all checkbox (only for delete mode)
+    if (isSelectionMode && selectionModeType === 'delete') {
+      updateSelectAllCheckbox();
+    }
+  }
+}
+
+/* ---------- Selection Mode Management ---------- */
+function enterSelectionMode(mode) {
+  isSelectionMode = true;
+  selectionModeType = mode;
+  selectedTransactionIds.clear();
+  
+  // Show/hide UI elements
+  document.getElementById("editModeBtn").style.display = "none";
+  document.getElementById("deleteModeBtn").style.display = "none";
+  document.getElementById("cancelSelectionBtn").style.display = "inline-block";
+  
+  // Only show checkboxes for delete mode
+  if (mode === 'delete') {
+    document.getElementById("checkboxHeader").style.display = "table-cell";
+    document.getElementById("selectionActionsBar").style.display = "none";
+    document.getElementById("editModeIndicator").style.display = "none";
+  } else {
+    // Edit mode
+    document.getElementById("checkboxHeader").style.display = "none";
+    document.getElementById("selectionActionsBar").style.display = "none";
+    document.getElementById("editModeIndicator").style.display = "flex";
+  }
+  
+  // Add edit mode class to table for styling
+  const tableBox = document.querySelector("#tab-transactions .table-box");
+  if (tableBox) {
+    if (mode === 'edit') {
+      tableBox.classList.add('edit-mode');
+    } else {
+      tableBox.classList.remove('edit-mode');
+    }
+  }
+  
+  renderTransactionsTable();
+  updateSelectionUI();
+}
+
+function exitSelectionMode() {
+  isSelectionMode = false;
+  selectionModeType = null;
+  selectedTransactionIds.clear();
+  
+  // Show/hide UI elements
+  document.getElementById("editModeBtn").style.display = "inline-block";
+  document.getElementById("deleteModeBtn").style.display = "inline-block";
+  document.getElementById("cancelSelectionBtn").style.display = "none";
+  document.getElementById("checkboxHeader").style.display = "none";
+  document.getElementById("selectionActionsBar").style.display = "none";
+  document.getElementById("editModeIndicator").style.display = "none";
+  
+  // Remove edit mode class
+  const tableBox = document.querySelector("#tab-transactions .table-box");
+  if (tableBox) {
+    tableBox.classList.remove('edit-mode');
+  }
+  
+  renderTransactionsTable();
+}
+
+function handleEditMode() {
+  enterSelectionMode('edit');
+}
+
+function handleDeleteMode() {
+  enterSelectionMode('delete');
+}
+
+// Enhanced enterSelectionMode to handle long-press activation
+function enterSelectionModeWithTransaction(mode, transactionId) {
+  enterSelectionMode(mode);
+  if (transactionId) {
+    selectedTransactionIds.add(transactionId);
+    renderTransactionsTable();
+    updateSelectionUI();
+  }
+}
+
+function handleCancelSelection() {
+  exitSelectionMode();
+}
+
+/* ---------- Selection Management ---------- */
+function updateSelectionUI() {
+  if (!isSelectionMode) {
+    document.getElementById("selectionActionsBar").style.display = "none";
+    document.getElementById("editModeIndicator").style.display = "none";
+    return;
+  }
+  
+  // Only show selection bar for delete mode
+  if (selectionModeType === 'delete') {
+    const count = selectedTransactionIds.size;
+    const actionsBar = document.getElementById("selectionActionsBar");
+    const selectedCount = document.getElementById("selectedCount");
+    
+    if (count > 0) {
+      actionsBar.style.display = "flex";
+      selectedCount.textContent = `${count} transaction${count === 1 ? '' : 's'} selected`;
+    } else {
+      actionsBar.style.display = "none";
+    }
+    
+    updateSelectAllCheckbox();
+  } else {
+    // Edit mode - show indicator
+    document.getElementById("editModeIndicator").style.display = "flex";
+    document.getElementById("selectionActionsBar").style.display = "none";
+  }
+}
+
+function updateSelectAllCheckbox() {
+  if (!isSelectionMode) return;
+  
+  const selectAll = document.getElementById("selectAllCheckbox");
+  if (!selectAll) return;
+  
+  const tx = getFilteredTransactions();
+  const allSelected = tx.length > 0 && tx.every(t => selectedTransactionIds.has(t.id));
+  const someSelected = tx.some(t => selectedTransactionIds.has(t.id));
+  
+  selectAll.checked = allSelected;
+  selectAll.indeterminate = someSelected && !allSelected;
+}
+
+function handleSelectAll() {
+  if (!isSelectionMode) return;
+  
+  const selectAll = document.getElementById("selectAllCheckbox");
+  if (!selectAll) return;
+  
+  const tx = getFilteredTransactions();
+  
+  if (selectAll.checked) {
+    tx.forEach(t => selectedTransactionIds.add(t.id));
+  } else {
+    tx.forEach(t => selectedTransactionIds.delete(t.id));
+  }
+  
+  renderTransactionsTable();
+  updateSelectionUI();
+}
+
+// Edit mode uses click-to-edit, so this function is not needed for edit mode
+// But keeping it for compatibility in case it's called
+function handleEditSelected() {
+  if (!isSelectionMode || selectionModeType !== 'edit') return;
+  // Edit mode uses click-to-edit, so this should not be called
+  // But if it is, just exit selection mode
+  exitSelectionMode();
+}
+
+function handleDeleteSelected() {
+  if (!isSelectionMode || selectionModeType !== 'delete') return;
+  
+  const selected = Array.from(selectedTransactionIds);
+  
+  if (selected.length === 0) {
+    showToast("No transactions selected. Please select transaction(s) to delete.", "Error");
+    return;
+  }
+  
+  const count = selected.length;
+  const message = `Are you sure you want to delete ${count} transaction${count === 1 ? '' : 's'}? This action cannot be undone.`;
+  
+  if (!confirm(message)) {
+    return;
+  }
+  
+  const data = getActiveData();
+  data.transactions = data.transactions.filter(t => !selected.includes(t.id));
+  
+  saveState();
+  exitSelectionMode();
+  renderAll();
+  showToast(`Deleted ${count} transaction${count === 1 ? '' : 's'}`);
+}
+
+/* ---------- Render Savings Goals ---------- */
+function renderGoals() {
+  const list = document.getElementById("goalsList");
+  if (!list) return;
+  list.innerHTML = "";
+
+  const data = getActiveData() || {};
+  const goals = Array.isArray(data.savingsGoals) ? data.savingsGoals : [];
+
+  goals.forEach(g => {
+    const percent = Math.min(100, (g.current / g.target) * 100);
+
+    const div = document.createElement("div");
+    div.className = "goal-item";
+    div.innerHTML = `
+      <div class="goal-label"><b>${g.name}</b> — ${formatMoney(g.current)} / ${formatMoney(g.target)}</div>
+      <div class="goal-bar"><div class="goal-fill" style="width:${percent}%"></div></div>
+      <button data-id="${g.id}" class="addToSavingsBtn" style="margin-top:6px; background:var(--success); color:var(--text-primary);">Add to Savings</button>
+      <button data-id="${g.id}" class="editGoalBtn" style="margin-left:6px;">Edit</button>
+      <button data-id="${g.id}" class="deleteGoalBtn" style="margin-left:6px;">Delete</button>
+    `;
+    list.appendChild(div);
+  });
+
+  list.querySelectorAll(".addToSavingsBtn").forEach(btn => {
+    btn.addEventListener("click", () => addToSavings(btn.dataset.id));
+  });
+  list.querySelectorAll(".editGoalBtn").forEach(btn => {
+    btn.addEventListener("click", () => editGoal(btn.dataset.id));
+  });
+  list.querySelectorAll(".deleteGoalBtn").forEach(btn => {
+    btn.addEventListener("click", () => deleteGoal(btn.dataset.id));
+  });
+}
+
+/* ---------- Charts ---------- */
+
+let categoryChart = null;
+let monthlyChart = null;
+
+function renderCategoryChart() {
+  const ctx = document.getElementById("categoryChart");
+  const tx = getFilteredTransactions();
+  const cats = getActiveData().categories;
+
+  const totals = {};
+  cats.forEach(c => totals[c.id] = 0);
+
+  tx.forEach(t => {
+    if (t.type === "expense") {
+      if (totals[t.categoryId] == null) totals[t.categoryId] = 0;
+      totals[t.categoryId] += t.amount;
+    }
+  });
+
+  const labels = [];
+  const values = [];
+  const colors = [];
+
+  cats.forEach(c => {
+    labels.push(c.name);
+    values.push(totals[c.id] || 0);
+    colors.push(c.color);
+  });
+
+  if (categoryChart) categoryChart.destroy();
+
+  categoryChart = new Chart(ctx, {
+    type: "doughnut",
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: colors
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      plugins: { 
+        legend: { 
+          labels: { 
+            color: getComputedStyle(document.documentElement).getPropertyValue('--text-primary') || '#e2e8f0'
+          } 
+        } 
+      }
+    }
+  });
+}
+
+function renderMonthlyChart() {
+  const ctx = document.getElementById("monthlyChart");
+
+  const data = getActiveData().transactions;
+
+  // group last 6 months income/expenses
+  const now = new Date();
+  const months = [];
+
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = currentMonthISO(d);
+    months.push(key);
+  }
+
+  const incomeArr = months.map(m => {
+    return data.filter(t => t.date.startsWith(m) && t.type === "income")
+               .reduce((s, t) => s + t.amount, 0);
+  });
+  const expenseArr = months.map(m => {
+    return data.filter(t => t.date.startsWith(m) && t.type === "expense")
+               .reduce((s, t) => s + t.amount, 0);
+  });
+
+  if (monthlyChart) monthlyChart.destroy();
+
+  monthlyChart = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: months,
+      datasets: [
+        { label: "Income", data: incomeArr, backgroundColor: "#4ade80" },
+        { label: "Expenses", data: expenseArr, backgroundColor: "#f87171" }
+      ]
+    },
+    options: {
+      plugins: { 
+        legend: { 
+          labels: { 
+            color: getComputedStyle(document.documentElement).getPropertyValue('--text-primary') || '#e2e8f0'
+          } 
+        } 
+      },
+      scales: {
+        x: { 
+          ticks: { 
+            color: getComputedStyle(document.documentElement).getPropertyValue('--text-primary') || '#e2e8f0'
+          } 
+        },
+        y: { 
+          ticks: { 
+            color: getComputedStyle(document.documentElement).getPropertyValue('--text-primary') || '#e2e8f0'
+          } 
+        }
+      }
+    }
+  });
+}
+
+/* ---------- Drawer Logic ---------- */
+
+let editTransactionId = null;
+
+function openDrawerForAdd() {
+  editTransactionId = null;
+  document.getElementById("drawerTitle").textContent = "Add Transaction";
+  document.getElementById("drawerDate").value = new Date().toISOString().slice(0, 10);
+  document.getElementById("drawerDesc").value = "";
+  document.getElementById("drawerAmount").value = "";
+  document.getElementById("drawerType").value = "expense";
+
+  const cats = getActiveData().categories;
+  document.getElementById("drawerCategory").value = cats.length ? cats[0].id : "";
+  document.getElementById("drawerMerchant").value = "";
+  document.getElementById("drawerNote").value = "";
+
+  document.getElementById("drawer").classList.add("open");
+}
+
+function openDrawerForEdit(id) {
+  editTransactionId = id;
+  const data = getActiveData();
+  const t = data.transactions.find(x => x.id === id);
+
+  if (!t) return;
+
+  document.getElementById("drawerTitle").textContent = "Edit Transaction";
+  document.getElementById("drawerDate").value = t.date;
+  document.getElementById("drawerDesc").value = t.description;
+  document.getElementById("drawerAmount").value = t.amount;
+  document.getElementById("drawerType").value = t.type;
+  document.getElementById("drawerCategory").value = t.categoryId;
+  document.getElementById("drawerMerchant").value = t.merchant || "";
+  document.getElementById("drawerNote").value = t.note || "";
+
+  document.getElementById("drawer").classList.add("open");
+}
+
+function closeDrawer() {
+  document.getElementById("drawer").classList.remove("open");
+  editTransactionId = null;
+}
+
+/* ---------- Save Transaction ---------- */
+async function saveTransactionFromDrawer() {
+  const date = document.getElementById("drawerDate").value;
+  const desc = document.getElementById("drawerDesc").value.trim();
+  const amt = parseFloat(document.getElementById("drawerAmount").value);
+  const type = document.getElementById("drawerType").value;
+  const cat = document.getElementById("drawerCategory").value;
+  const merchant = document.getElementById("drawerMerchant").value.trim();
+  const note = document.getElementById("drawerNote").value.trim();
+
+  if (!date || !desc || !amt) {
+    showToast("Missing fields", "Error");
+    return;
+  }
+
+  const data = getActiveData();
+  const wasEditing = !!editTransactionId;
+
+  if (useSupabase && currentBudget && currentUser && transactionService) {
+    // Use Supabase
+    try {
+      // Validate category_id - must be a UUID or null
+      // If cat is a string like "rent" (from DEFAULT_CATEGORIES), find the actual category
+      let categoryId = cat || null;
+      if (categoryId && !isValidUUID(categoryId)) {
+        // It's not a UUID, try to find the category by name or ID
+        const categories = getActiveData().categories;
+        const foundCategory = categories.find(c => c.id === categoryId || c.name.toLowerCase() === categoryId.toLowerCase());
+        if (foundCategory && isValidUUID(foundCategory.id)) {
+          categoryId = foundCategory.id;
+        } else {
+          // Can't find a valid category, set to null
+          console.warn('Invalid category ID:', categoryId, '- setting to null');
+          categoryId = null;
+        }
+      }
+      
+      const transactionData = {
+        date,
+        description: desc,
+        amount: amt,
+        type,
+        category_id: categoryId,
+        merchant: merchant || null,
+        notes: note || null
+      };
+      
+      if (editTransactionId) {
+        // Update existing
+        const { error } = await transactionService.updateTransaction(editTransactionId, transactionData);
+        if (error) {
+          showToast(`Error: ${error.message}`, "Error");
+          return;
+        }
+        showToast("Transaction updated");
+      } else {
+        // Create new
+        console.log('Creating transaction:', { budgetId: currentBudget.id, userId: currentUser.id, transactionData });
+        const { data: newTx, error } = await transactionService.createTransaction(
+          currentBudget.id,
+          currentUser.id,
+          transactionData
+        );
+        if (error) {
+          console.error('Transaction creation error:', error);
+          showToast(`Error: ${error.message}`, "Error");
+          return;
+        }
+        console.log('Transaction created successfully:', newTx);
+        showToast("Transaction added");
+      }
+      
+      // Reload data from Supabase
+      console.log('Reloading data from Supabase...');
+      await loadDataFromSupabase();
+      console.log('Data reloaded, current state:', getActiveData().transactions.length, 'transactions');
+    } catch (error) {
+      console.error('Error saving transaction:', error);
+      showToast(`Error saving transaction: ${error.message}`, "Error");
+      return;
+    }
+  } else {
+    // Use localStorage (fallback)
+    if (editTransactionId) {
+      // Edit existing
+      const t = data.transactions.find(x => x.id === editTransactionId);
+      t.date = date;
+      t.description = desc;
+      t.amount = amt;
+      t.type = type;
+      t.categoryId = cat;
+      t.merchant = merchant;
+      t.note = note;
+
+      showToast("Transaction updated");
+    } else {
+      // Create new
+      data.transactions.push({
+        id: "tx_" + Math.random().toString(36).slice(2),
+        date,
+        description: desc,
+        amount: amt,
+        type,
+        categoryId: cat,
+        merchant: merchant || undefined,
+        note
+      });
+      showToast("Transaction added");
+    }
+    saveState();
+  }
+
+  closeDrawer();
+  
+  // Exit selection mode if we were editing from selection mode
+  if (wasEditing && isSelectionMode) {
+    exitSelectionMode();
+  }
+  
+  renderAll();
+}
+
+/* ---------- Delete Transaction ---------- */
+async function deleteTransaction(id) {
+  if (useSupabase && currentBudget && transactionService) {
+    // Use Supabase
+    try {
+      const { error } = await transactionService.deleteTransaction(id);
+      if (error) {
+        showToast(`Error: ${error.message}`, "Error");
+        return;
+      }
+      showToast("Transaction deleted");
+      // Reload data from Supabase
+      await loadDataFromSupabase();
+    } catch (error) {
+      console.error('Error deleting transaction:', error);
+      showToast(`Error deleting transaction: ${error.message}`, "Error");
+      return;
+    }
+  } else {
+    // Use localStorage (fallback)
+    const data = getActiveData();
+    data.transactions = data.transactions.filter(t => t.id !== id);
+    saveState();
+    showToast("Transaction deleted");
+  }
+  
+  renderAll();
+}
+
+/************************************************************
+  SAVINGS GOALS + CSV IMPORT + JSON IMPORT/EXPORT +
+  ALL-MONTHS TOGGLE + EVENT HANDLERS
+************************************************************/
+
+/* ---------- Savings Goals Logic ---------- */
+
+async function addGoal() {
+  const name = prompt("Goal name:");
+  if (!name) return;
+
+  const target = parseFloat(prompt("Target amount:") || "");
+  if (!target || target <= 0) {
+    showToast("Invalid goal target", "Error");
+    return;
+  }
+
+  const current = parseFloat(prompt("Current saved amount:") || "0");
+  if (isNaN(current) || current < 0) {
+    showToast("Invalid saved amount", "Error");
+    return;
+  }
+
+  if (useSupabase && currentBudget && goalService) {
+    // Use Supabase
+    try {
+      const { data, error } = await goalService.createSavingsGoal(currentBudget.id, {
+        name,
+        target,
+        current
+      });
+      if (error) {
+        showToast(`Error: ${error.message}`, "Error");
+        return;
+      }
+      showToast("Goal added");
+      await loadDataFromSupabase();
+    } catch (error) {
+      console.error('Error adding goal:', error);
+      showToast(`Error adding goal: ${error.message}`, "Error");
+      return;
+    }
+  } else {
+    // Use localStorage (fallback)
+    const data = getActiveData();
+    data.savingsGoals.push({
+      id: "goal_" + Math.random().toString(36).slice(2),
+      name,
+      target,
+      current
+    });
+    saveState();
+    showToast("Goal added");
+  }
+
+  renderAll();
+}
+
+async function editGoal(id) {
+  const goals = getActiveData().savingsGoals;
+  const g = goals.find(x => x.id === id);
+  if (!g) return;
+
+  const name = prompt("Goal name:", g.name);
+  if (!name) return;
+
+  const target = parseFloat(prompt("Target amount:", g.target) || "");
+  if (!target || target <= 0) {
+    showToast("Invalid target", "Error");
+    return;
+  }
+
+  const current = parseFloat(prompt("Current saved:", g.current) || "");
+  if (isNaN(current) || current < 0) {
+    showToast("Invalid saved", "Error");
+    return;
+  }
+
+  if (useSupabase && goalService) {
+    // Use Supabase
+    try {
+      const { error } = await goalService.updateSavingsGoal(id, {
+        name,
+        target,
+        current
+      });
+      if (error) {
+        showToast(`Error: ${error.message}`, "Error");
+        return;
+      }
+      showToast("Goal updated");
+      await loadDataFromSupabase();
+    } catch (error) {
+      console.error('Error updating goal:', error);
+      showToast(`Error updating goal: ${error.message}`, "Error");
+      return;
+    }
+  } else {
+    // Use localStorage (fallback)
+    g.name = name;
+    g.target = target;
+    g.current = current;
+    saveState();
+    showToast("Goal updated");
+  }
+
+  renderAll();
+}
+
+async function deleteGoal(id) {
+  if (useSupabase && goalService) {
+    // Use Supabase
+    try {
+      const { error } = await goalService.deleteSavingsGoal(id);
+      if (error) {
+        showToast(`Error: ${error.message}`, "Error");
+        return;
+      }
+      showToast("Goal deleted");
+      await loadDataFromSupabase();
+    } catch (error) {
+      console.error('Error deleting goal:', error);
+      showToast(`Error deleting goal: ${error.message}`, "Error");
+      return;
+    }
+  } else {
+    // Use localStorage (fallback)
+    let goals = getActiveData().savingsGoals;
+    goals = goals.filter(g => g.id !== id);
+    getActiveData().savingsGoals = goals;
+    saveState();
+    showToast("Goal deleted");
+  }
+
+  renderAll();
+}
+
+function addToSavings(goalId) {
+  const goals = getActiveData().savingsGoals;
+  const goal = goals.find(g => g.id === goalId);
+  if (!goal) return;
+
+  const amountStr = prompt(`Add to "${goal.name}" savings:\n\nCurrent: ${formatMoney(goal.current)}\nTarget: ${formatMoney(goal.target)}`, "");
+  if (!amountStr) return;
+
+  const amount = parseFloat(amountStr);
+  if (isNaN(amount) || amount <= 0) {
+    showToast("Invalid amount", "Error");
+    return;
+  }
+
+  const data = getActiveData();
+  
+  // Update the goal's current amount
+  goal.current = (goal.current || 0) + amount;
+  
+  // Create an expense transaction for the savings transfer
+  // Find or use "other" category for savings transfers
+  const savingsCat = data.categories.find(c => c.name.toLowerCase().includes("savings")) || 
+                     data.categories.find(c => c.id === "other") || 
+                     data.categories[0];
+  
+  const today = new Date().toISOString().slice(0, 10);
+  data.transactions.push({
+    id: "tx_" + Math.random().toString(36).slice(2),
+    date: today,
+    description: `Savings Transfer - ${goal.name}`,
+    amount: amount,
+    type: "expense",
+    categoryId: savingsCat.id,
+    note: `Added to savings goal: ${goal.name}`
+  });
+
+  saveState();
+  renderAll();
+  showToast(`Added ${formatMoney(amount)} to ${goal.name}`, "Savings Updated");
+}
+
+/* ---------- JSON Export / Import ---------- */
+
+function exportJson() {
+  const dataStr = JSON.stringify(state, null, 2);
+  const blob = new Blob([dataStr], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "budget-data.json";
+  a.click();
+
+  URL.revokeObjectURL(url);
+  showToast("JSON exported");
+}
+
+function importJson() {
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.accept = "application/json";
+
+  inp.onchange = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const obj = JSON.parse(reader.result);
+
+        // Must contain our profile-based structure
+        if (!obj.profiles || !obj.dataByProfile) {
+          showToast("Invalid JSON structure", "Error");
+          return;
+        }
+
+        state = obj;
+        saveState();
+        renderAll();
+        showToast("JSON imported");
+      } catch (err) {
+        showToast("Failed to parse JSON", "Error");
+      }
+    };
+
+    reader.readAsText(file);
+  };
+
+  inp.click();
+}
+
+/* ---------- CSV Import ---------- */
+
+function importCsv() {
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.accept = ".csv,text/csv";
+
+  inp.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+
+      const text = reader.result;
+      const lines = text.split(/\r?\n/).filter(x => x.trim());
+
+      const data = getActiveData();
+      const defaultCat = data.categories[0]?.id || "other";
+
+      const imported = [];
+
+      function normalizeDate(raw) {
+        raw = raw.replace(/^"|"$/g, "").trim();
+
+        // YYYY-MM-DD
+        if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+        // MM/DD/YYYY → YYYY-MM-DD
+        if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(raw)) {
+          const [mm, dd, yyyy] = raw.split("/");
+          return `${yyyy}-${mm.padStart(2,"0")}-${dd.padStart(2,"0")}`;
+        }
+
+        return null;
+      }
+
+      function normalizeAmount(raw) {
+        raw = raw.replace(/^"|"$/g, "").trim();
+        raw = raw.replace(/[^0-9.\-]/g, ""); // remove junk
+        if (!raw) return null;
+        const n = parseFloat(raw);
+        return isNaN(n) ? null : n;
+      }
+
+      for (let line of lines) {
+
+        // Smart split that respects quotes
+        let cols = line.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g);
+        if (!cols || cols.length < 3) continue;
+
+        // Trim and strip quotes
+        cols = cols.map(c => c.trim().replace(/^"|"$/g, ""));
+
+        const rawDate = cols[0];
+        const rawAmount = cols[1];
+        const rawDesc = cols[2];
+        const rawCategory = cols[3] ? cols[3].trim().toLowerCase() : null;
+
+        const date = normalizeDate(rawDate);
+        const amount = normalizeAmount(rawAmount);
+        const desc = rawDesc.trim();
+
+        if (!date || amount === null || !desc) continue;
+
+        const type = amount >= 0 ? "income" : "expense";
+
+        // Match category from CSV or use default
+        let categoryId = defaultCat;
+        if (rawCategory) {
+          // Try to find matching category by id or name
+          const matchedCat = data.categories.find(c => 
+            c.id.toLowerCase() === rawCategory || 
+            c.name.toLowerCase() === rawCategory
+          );
+          if (matchedCat) {
+            categoryId = matchedCat.id;
+          }
+        }
+
+        imported.push({
+          id: "tx_" + Math.random().toString(36).slice(2),
+          date,
+          description: desc,
+          amount: Math.abs(amount),
+          type,
+          categoryId: categoryId,
+          note: ""
+        });
+      }
+
+      if (!imported.length) {
+        showToast("No valid CSV rows found", "CSV Import");
+        return;
+      }
+
+      // Save to Supabase if available, otherwise localStorage
+      if (useSupabase && currentBudget && currentUser && transactionService) {
+        try {
+          // Validate and fix category IDs (convert string IDs to UUIDs if needed)
+          // Always reload categories from Supabase to ensure we have the latest with valid UUIDs
+          let categories = [];
+          if (categoryService) {
+            const { data: reloadedCats, error: reloadError } = await categoryService.getCategories(currentBudget.id);
+            if (!reloadError && reloadedCats && reloadedCats.length > 0) {
+              categories = reloadedCats.map(c => ({
+                id: c.id,
+                name: c.name,
+                color: c.color,
+                monthlyBudget: parseFloat(c.monthly_budget || 0)
+              }));
+              // Update state
+              const budgetDataKey = currentBudget.id;
+              if (state.dataByProfile[budgetDataKey]) {
+                state.dataByProfile[budgetDataKey].categories = categories;
+              }
+              console.log('Reloaded categories from Supabase for CSV import:', categories.length, categories.map(c => c.name));
+            } else {
+              // Fallback to state if reload fails
+              categories = getActiveData().categories;
+              console.log('Using categories from state:', categories.length);
+            }
+          } else {
+            categories = getActiveData().categories;
+          }
+          
+          console.log('Available categories for matching:', categories.map(c => ({ id: c.id, name: c.name, isValidUUID: isValidUUID(c.id) })));
+          
+          // If still no valid categories exist, create default ones
+          const validCategories = categories.filter(c => isValidUUID(c.id));
+          if (validCategories.length === 0 && categoryService) {
+            console.log('No valid categories found, creating default categories...');
+            const defaultCategories = [
+              { name: "Rent", color: "#f87171", monthly_budget: 1200 },
+              { name: "Groceries", color: "#4ade80", monthly_budget: 300 },
+              { name: "Transport", color: "#60a5fa", monthly_budget: 150 },
+              { name: "Fun", color: "#c084fc", monthly_budget: 200 },
+              { name: "Bills", color: "#facc15", monthly_budget: 250 },
+              { name: "Other", color: "#94a3b8", monthly_budget: 0 }
+            ];
+            
+            // Try to create categories (ignore 409 conflicts - they already exist)
+            for (const cat of defaultCategories) {
+              try {
+                const { data: newCat, error } = await categoryService.createCategory(currentBudget.id, cat);
+                // 409 Conflict or 23505 means category already exists, which is fine
+                if (error) {
+                  // Check if it's a conflict/duplicate error (these are OK)
+                  const isConflict = error.code === '23505' || 
+                                   error.code === 'PGRST204' || 
+                                   error.status === 409 ||
+                                   error.message?.includes('duplicate') ||
+                                   error.message?.includes('unique') ||
+                                   error.message?.includes('already exists');
+                  if (!isConflict) {
+                    console.warn('Error creating category:', cat.name, error);
+                  }
+                }
+              } catch (err) {
+                // Ignore duplicate/conflict errors
+                const isConflict = err.code === '23505' || 
+                                 err.code === 'PGRST204' ||
+                                 err.status === 409 ||
+                                 err.message?.includes('duplicate') ||
+                                 err.message?.includes('unique');
+                if (!isConflict) {
+                  console.error('Error creating default category:', err);
+                }
+              }
+            }
+            
+            // Reload categories from Supabase to get the actual UUIDs
+            const { data: loadedCategories, error: loadError } = await categoryService.getCategories(currentBudget.id);
+            if (!loadError && loadedCategories && loadedCategories.length > 0) {
+              categories = loadedCategories.map(c => ({
+                id: c.id,
+                name: c.name,
+                color: c.color,
+                monthlyBudget: parseFloat(c.monthly_budget || 0)
+              }));
+              
+              // Update state with new categories
+              const budgetDataKey = currentBudget.id;
+              if (state.dataByProfile[budgetDataKey]) {
+                state.dataByProfile[budgetDataKey].categories = categories;
+              }
+              
+              console.log('Loaded categories from Supabase after creation:', categories.length, categories.map(c => ({ name: c.name, id: c.id })));
+            } else {
+              console.error('Error loading categories after creation:', loadError);
+            }
+          }
+          
+          // Find a default category (first valid UUID category, or "Other" if it exists)
+          const defaultCategory = categories.find(c => 
+            isValidUUID(c.id) && (c.name.toLowerCase() === 'other' || c.name.toLowerCase() === 'uncategorized')
+          ) || categories.find(c => isValidUUID(c.id)) || null;
+          
+          console.log('Default category for unmatched:', defaultCategory ? { id: defaultCategory.id, name: defaultCategory.name } : 'none');
+          
+          const transactionsToImport = imported.map(t => {
+            let categoryId = t.categoryId;
+            
+            // If categoryId is not a UUID, find the matching category
+            if (categoryId && !isValidUUID(categoryId)) {
+              // Normalize the search term (lowercase, trim)
+              const searchTerm = categoryId.toLowerCase().trim();
+              
+              // Try to find by name (case-insensitive, flexible matching)
+              const foundCategory = categories.find(c => {
+                if (isValidUUID(c.id)) {
+                  const catName = c.name.toLowerCase().trim();
+                  // Exact match or contains match
+                  return catName === searchTerm || catName.includes(searchTerm) || searchTerm.includes(catName);
+                }
+                return false;
+              });
+              
+              if (foundCategory && isValidUUID(foundCategory.id)) {
+                categoryId = foundCategory.id;
+                console.log(`Matched category "${t.categoryId}" to "${foundCategory.name}" (${foundCategory.id})`);
+              } else {
+                // No match found, use default category
+                categoryId = defaultCategory ? defaultCategory.id : null;
+                console.warn(`Category "${t.categoryId}" not found, using default: ${defaultCategory?.name || 'none'}`);
+              }
+            } else if (!categoryId || !isValidUUID(categoryId)) {
+              // categoryId is null or invalid, use default
+              categoryId = defaultCategory ? defaultCategory.id : null;
+            }
+            
+            return {
+              date: t.date,
+              description: t.description,
+              amount: t.amount,
+              type: t.type,
+              category_id: categoryId,
+              notes: t.note || null
+            };
+          });
+
+          // Use bulk create for better performance
+          const { data: createdTransactions, error } = await transactionService.bulkCreateTransactions(
+            currentBudget.id,
+            currentUser.id,
+            transactionsToImport
+          );
+
+          if (error) {
+            console.error('Error importing CSV to Supabase:', error);
+            showToast(`Error importing CSV: ${error.message}`, "Error");
+            return;
+          }
+
+          // Store IDs for undo functionality
+          if (createdTransactions) {
+            data.lastImportBatchIds = createdTransactions.map(tx => tx.id);
+          }
+
+          // Reload data from Supabase
+          await loadDataFromSupabase();
+          showToast(`Imported ${imported.length} transactions from CSV`, "CSV Import");
+        } catch (error) {
+          console.error('Error importing CSV:', error);
+          showToast(`Error importing CSV: ${error.message}`, "Error");
+        }
+      } else {
+        // Fallback to localStorage
+        imported.forEach(t => data.transactions.push(t));
+        data.lastImportBatchIds = imported.map(x => x.id);
+        saveState();
+        renderAll();
+        showToast(`Imported ${imported.length} rows`, "CSV Import");
+      }
+    };
+
+    reader.readAsText(file);
+  };
+
+  inp.click();
+}
+
+/* ---------- Undo CSV Import ---------- */
+
+function undoImport() {
+  const data = getActiveData();
+  const ids = data.lastImportBatchIds || [];
+
+  if (!ids.length) {
+    showToast("Nothing to undo");
+    return;
+  }
+
+  data.transactions = data.transactions.filter(t => !ids.includes(t.id));
+  data.lastImportBatchIds = [];
+
+  saveState();
+  renderAll();
+  showToast("Last import undone");
+}
+
+/* ---------- Toggle All Months ---------- */
+
+function toggleAllMonths() {
+  showAllMonths = !showAllMonths;
+  document.getElementById("toggleAllMonthsBtn").textContent = showAllMonths ? "All Months ✓" : "All Months";
+  document.getElementById("toggleAllMonthsBtn").title = showAllMonths ? "Showing all months" : "Show all months";
+  renderAll();
+}
+
+/* ---------- Bank Integration (Plaid) ---------- */
+
+let plaidLink = null;
+const API_BASE_URL = 'http://localhost:3000/api';
+
+async function connectBank() {
+  try {
+    // Get link token from backend
+    const response = await fetch(`${API_BASE_URL}/create_link_token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: getActiveProfileId() })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to create link token. Make sure the server is running.');
+    }
+
+    const { link_token } = await response.json();
+
+    // Initialize Plaid Link
+    if (plaidLink) {
+      plaidLink.destroy();
+    }
+
+    plaidLink = Plaid.create({
+      token: link_token,
+      onSuccess: async (public_token, metadata) => {
+        // Exchange public token for access token
+        const exchangeResponse = await fetch(`${API_BASE_URL}/exchange_token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ public_token })
+        });
+
+        const { access_token, item_id } = await exchangeResponse.json();
+        
+        // Store access token (in a real app, you'd want to encrypt this)
+        const data = getActiveData();
+        if (!data.bankConnections) data.bankConnections = [];
+        data.bankConnections.push({
+          item_id,
+          access_token,
+          institution: metadata.institution?.name || 'Unknown',
+          accounts: metadata.accounts
+        });
+        saveState();
+
+        // Fetch and import transactions
+        await importBankTransactions(access_token);
+        
+        showToast(`Connected to ${metadata.institution?.name || 'bank'}`, "Bank Connected");
+      },
+      onExit: (err, metadata) => {
+        if (err) {
+          console.error('Plaid Link error:', err);
+          console.error('Plaid Link metadata:', metadata);
+          showToast(`Connection error: ${err.error_message || err.display_message || 'Unknown error'}`, "Connection Error");
+        } else {
+          showToast("Bank connection cancelled", "Info");
+        }
+      },
+      onEvent: (eventName, metadata) => {
+        console.log('Plaid Link event:', eventName, metadata);
+        if (eventName === 'ERROR' && metadata) {
+          console.error('Plaid Link error event:', metadata);
+        }
+      },
+    });
+
+    plaidLink.open();
+  } catch (error) {
+    console.error('Bank connection error:', error);
+    showToast(`Error: ${error.message}. Make sure the server is running on port 3000.`, "Connection Error");
+  }
+}
+
+async function importBankTransactions(access_token, retryCount = 0) {
+  const maxRetries = 3;
+  const retryDelay = 2000; // 2 seconds base delay
+  
+  try {
+    // Get last 30 days of transactions
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - 30);
+
+    console.log('Fetching bank transactions...', {
+      start_date: startDate.toISOString().split('T')[0],
+      end_date: endDate.toISOString().split('T')[0],
+      retry: retryCount
+    });
+
+    const response = await fetch(`${API_BASE_URL}/transactions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        access_token,
+        start_date: startDate.toISOString().split('T')[0],
+        end_date: endDate.toISOString().split('T')[0]
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorMessage = errorData.error || errorData.message || `Server error: ${response.status}`;
+      
+      // Check if it's the "product not ready" error
+      if (errorMessage.toLowerCase().includes('not yet ready') || 
+          errorMessage.toLowerCase().includes('webhook') ||
+          response.status === 400) {
+        
+        if (retryCount < maxRetries) {
+          const delay = retryDelay * Math.pow(2, retryCount); // Exponential backoff
+          console.log(`Transactions not ready yet. Retrying in ${delay/1000} seconds... (${retryCount + 1}/${maxRetries})`);
+          
+          showToast(`Transactions are still processing. Retrying in ${delay/1000} seconds...`, "Processing");
+          
+          await new Promise(resolve => setTimeout(resolve, delay));
+          return importBankTransactions(access_token, retryCount + 1);
+        } else {
+          // Max retries reached
+          showToast(
+            "Transactions are still processing. Please wait a few minutes and try importing again using the 'Import Transactions' button.",
+            "Processing",
+            8000
+          );
+          throw new Error('Transactions not ready after multiple retries. Please try again in a few minutes.');
+        }
+      }
+      
+      throw new Error(errorMessage);
+    }
+
+    const responseData = await response.json();
+    const transactions = responseData.transactions || [];
+    
+    console.log(`Received ${transactions.length} transactions from server`);
+    
+    if (!transactions || transactions.length === 0) {
+      showToast("No transactions found in the last 30 days. Try connecting to a different test account.", "Info");
+      return;
+    }
+
+    const data = getActiveData();
+    const defaultCat = data.categories[0]?.id || "other";
+    
+    // Add transactions, avoiding duplicates
+    const existingIds = new Set(data.transactions.map(t => t.plaid_id).filter(Boolean));
+    let added = 0;
+
+    transactions.forEach(tx => {
+      if (!existingIds.has(tx.plaid_id)) {
+        tx.categoryId = tx.categoryId || defaultCat;
+        data.transactions.push(tx);
+        added++;
+      }
+    });
+
+    saveState();
+    renderAll();
+    showToast(`Imported ${added} transactions from bank`, "Bank Import");
+  } catch (error) {
+    console.error('Error importing transactions:', error);
+    showToast("Error importing transactions", "Error");
+  }
+}
+
+/* ---------- Clear Data ---------- */
+
+async function clearData() {
+  const confirmMessage = "Are you sure you want to clear ALL data for the current budget?\n\nThis will delete:\n- All transactions\n- All savings goals\n- All financial goals\n- All debts\n- All recurring transactions\n- Categories will be reset to defaults\n\nThis action cannot be undone!";
+  
+  if (!confirm(confirmMessage)) {
+    return;
+  }
+
+  // Double confirmation for safety
+  if (!confirm("This is your last chance! Click OK to permanently delete all data for this budget.")) {
+    return;
+  }
+
+  // Clear from Supabase if available
+  if (useSupabase && currentBudget && currentUser && transactionService && goalService && debtService && recurringService && categoryService) {
+    try {
+      showToast("Clearing data from Supabase...", "Clearing");
+      
+      // Get all data first to get IDs for deletion
+      const { data: transactions } = await transactionService.getTransactions(currentBudget.id);
+      const { data: savingsGoals } = await goalService.getSavingsGoals(currentBudget.id);
+      const { data: financialGoals } = await goalService.getFinancialGoals(currentBudget.id);
+      const { data: debts } = await debtService.getDebts(currentBudget.id);
+      const { data: recurringTransactions } = await recurringService.getRecurringTransactions(currentBudget.id);
+      const { data: categories } = await categoryService.getCategories(currentBudget.id);
+      
+      // Delete all transactions
+      if (transactions && transactions.length > 0) {
+        for (const tx of transactions) {
+          await transactionService.deleteTransaction(tx.id);
+        }
+      }
+      
+      // Delete all savings goals
+      if (savingsGoals && savingsGoals.length > 0) {
+        for (const goal of savingsGoals) {
+          await goalService.deleteSavingsGoal(goal.id);
+        }
+      }
+      
+      // Delete all financial goals
+      if (financialGoals && financialGoals.length > 0) {
+        for (const goal of financialGoals) {
+          await goalService.deleteFinancialGoal(goal.id);
+        }
+      }
+      
+      // Delete all debts
+      if (debts && debts.length > 0) {
+        for (const debt of debts) {
+          await debtService.deleteDebt(debt.id);
+        }
+      }
+      
+      // Delete all recurring transactions
+      if (recurringTransactions && recurringTransactions.length > 0) {
+        for (const rec of recurringTransactions) {
+          await recurringService.deleteRecurringTransaction(rec.id);
+        }
+      }
+      
+      // Delete all custom categories (keep default ones or recreate them)
+      if (categories && categories.length > 0) {
+        for (const cat of categories) {
+          await categoryService.deleteCategory(cat.id);
+        }
+      }
+      
+      // Reload data (will show empty state)
+      await loadDataFromSupabase();
+      
+      showToast("All data cleared from Supabase", "Data Cleared");
+    } catch (error) {
+      console.error('Error clearing data from Supabase:', error);
+      showToast(`Error clearing data: ${error.message}`, "Error");
+    }
+  } else {
+    // Fallback to localStorage
+    const data = getActiveData();
+    
+    // Clear transactions
+    data.transactions = [];
+    
+    // Clear savings goals
+    data.savingsGoals = [];
+    data.financialGoals = [];
+    
+    // Clear debts
+    data.debts = [];
+    
+    // Clear recurring transactions
+    data.recurringTransactions = [];
+    
+    // Reset categories to defaults
+    data.categories = JSON.parse(JSON.stringify(DEFAULT_CATEGORIES));
+    
+    // Clear import batch IDs
+    data.lastImportBatchIds = [];
+    
+    // Clear bank connections
+    data.bankConnections = [];
+    
+    saveState();
+    renderAll();
+    showToast("All data cleared for this profile", "Data Cleared");
+  }
+}
+
+/* ---------- Sankey Diagram ---------- */
+
+function renderSankeyChart() {
+  // Detect mobile device - declare at the top before use
+  const isMobile = window.innerWidth <= 768;
+  const isSmallMobile = window.innerWidth <= 480;
+  
+  // Update current date display
+  const dateEl = document.getElementById('currentDateDisplay');
+  if (dateEl) {
+    const now = new Date();
+    dateEl.textContent = now.toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    });
+  }
+
+  const tx = getFilteredTransactions();
+  const data = getActiveData();
+  const categories = data.categories;
+
+  // Calculate income by source (group by description or use "Paychecks" as default)
+  const incomeSources = {};
+  let totalIncome = 0;
+  tx.forEach(t => {
+    if (t.type === "income") {
+      const source = t.description || "Income";
+      if (!incomeSources[source]) {
+        incomeSources[source] = 0;
+      }
+      incomeSources[source] += t.amount;
+      totalIncome += t.amount;
+    }
+  });
+
+  // Calculate expenses by category
+  const categoryTotals = {};
+  let totalExpenses = 0;
+  categories.forEach(c => {
+    categoryTotals[c.id] = {
+      name: c.name,
+      amount: 0,
+      color: c.color
+    };
+  });
+
+  tx.forEach(t => {
+    if (t.type === "expense" && categoryTotals[t.categoryId]) {
+      categoryTotals[t.categoryId].amount += t.amount;
+      totalExpenses += t.amount;
+    }
+  });
+
+  // Check if we have any data to display
+  if (totalIncome === 0 && totalExpenses === 0) {
+    // Show empty state
+    document.getElementById("sankeyChart").innerHTML = 
+      '<div style="text-align:center; padding:50px; color:var(--text-secondary);">No income or expense data to display</div>';
+    return;
+  }
+
+  // Build Sankey data structure
+  const labels = [];
+  const source = [];
+  const target = [];
+  const value = [];
+  const linkColors = [];
+  const nodeColors = [];
+
+    // Add income source nodes (sorted by amount, largest first for top position)
+    const incomeIndices = {};
+    if (totalIncome > 0) {
+      // Sort income sources by amount (descending) so largest is at top
+      const sortedIncomeSources = Object.entries(incomeSources)
+        .sort((a, b) => b[1] - a[1]); // Sort descending by amount
+      
+      sortedIncomeSources.forEach(([sourceName, amount]) => {
+        const incomeIndex = labels.length;
+        incomeIndices[sourceName] = incomeIndex;
+        labels.push(sourceName);
+        nodeColors.push("rgba(96, 165, 250, 0.7)"); // Slightly transparent blue
+      });
+
+      // Add combined income node (middle layer)
+      const combinedIncomeIndex = labels.length;
+      labels.push("Income");
+      nodeColors.push("rgba(56, 189, 248, 0.7)"); // Slightly transparent cyan
+
+      // Link income sources to combined income (use sorted order to maintain top-to-bottom flow)
+      sortedIncomeSources.forEach(([sourceName, amount]) => {
+        source.push(incomeIndices[sourceName]);
+        target.push(combinedIncomeIndex);
+        value.push(amount);
+        linkColors.push("rgba(96, 165, 250, 0.4)"); // More transparent links
+      });
+
+      // Group expenses by category first, then by description
+      const categoryGroups = {};
+      const descriptionGroups = {};
+      
+      tx.forEach(t => {
+        if (t.type === "expense") {
+          const cat = categories.find(c => c.id === t.categoryId);
+          if (!cat) return;
+          
+          const categoryName = cat.name;
+          // Normalize description: trim whitespace and use consistent casing
+          const description = (t.description || "Other").trim();
+          
+          // Group by category
+          if (!categoryGroups[categoryName]) {
+            categoryGroups[categoryName] = {
+              categoryName: categoryName,
+              amount: 0,
+              color: cat.color
+            };
+          }
+          categoryGroups[categoryName].amount += t.amount;
+          
+          // Group by category + description for individual transactions
+          // Use normalized description to ensure proper grouping
+          const descKey = `${categoryName}|${description}`;
+          if (!descriptionGroups[descKey]) {
+            descriptionGroups[descKey] = {
+              categoryName: categoryName,
+              description: description,
+              amount: 0,
+              color: cat.color
+            };
+          }
+          descriptionGroups[descKey].amount += t.amount;
+        }
+      });
+
+      // Add category nodes (middle layer) - already sorted by amount descending (largest first = top)
+      const categoryIndices = {};
+      const sortedCategories = Object.values(categoryGroups).sort((a, b) => b.amount - a.amount);
+      
+      sortedCategories.forEach(category => {
+        const categoryIndex = labels.length;
+        categoryIndices[category.categoryName] = categoryIndex;
+        const pct = ((category.amount / totalIncome) * 100).toFixed(1);
+        labels.push(`${category.categoryName}<br>${formatMoney(category.amount)} (${pct}%)`);
+        
+        // Convert hex color to rgba for transparency
+        const hex = category.color;
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        nodeColors.push(`rgba(${r}, ${g}, ${b}, 0.7)`);
+        
+        // Link FROM combined income TO category
+        source.push(combinedIncomeIndex);
+        target.push(categoryIndex);
+        value.push(category.amount);
+        linkColors.push(`rgba(${r}, ${g}, ${b}, 0.5)`);
+      });
+
+      // Add individual transaction description nodes (final layer)
+      // Group descriptions by category and sort by amount (descending within each category for top position)
+      const sortedDescriptions = Object.values(descriptionGroups).sort((a, b) => {
+        // First sort by category index (to keep same category together), then by amount descending
+        if (a.categoryName !== b.categoryName) {
+          const catA = categoryIndices[a.categoryName];
+          const catB = categoryIndices[b.categoryName];
+          return (catA || 0) - (catB || 0);
+        }
+        return b.amount - a.amount; // Descending: largest first = top position
+      });
+      
+      sortedDescriptions.forEach(expense => {
+        const expenseIndex = labels.length;
+        const categoryIndex = categoryIndices[expense.categoryName];
+        const pct = ((expense.amount / totalIncome) * 100).toFixed(1);
+        labels.push(`${expense.description}<br>${formatMoney(expense.amount)} (${pct}%)`);
+        
+        // Convert hex color to rgba for transparency
+        const hex = expense.color;
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        nodeColors.push(`rgba(${r}, ${g}, ${b}, 0.7)`);
+
+        // Link FROM category TO individual transaction description
+        source.push(categoryIndex);
+        target.push(expenseIndex);
+        value.push(expense.amount);
+        linkColors.push(`rgba(${r}, ${g}, ${b}, 0.5)`);
+      });
+    } else if (totalExpenses > 0) {
+    // If no income but we have expenses, show expenses only
+    categories.forEach(c => {
+      if (categoryTotals[c.id].amount > 0) {
+        const catIndex = labels.length;
+        labels.push(c.name);
+        // Convert hex color to rgba for transparency
+        const hex = c.color;
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        nodeColors.push(`rgba(${r}, ${g}, ${b}, 0.7)`); // Slightly transparent nodes
+      }
+    });
+  }
+
+  // Only render if we have data
+  if (labels.length === 0 || source.length === 0) {
+    document.getElementById("sankeyChart").innerHTML = 
+      '<div style="text-align:center; padding:50px; color:var(--text-secondary);">No data to display</div>';
+    return;
+  }
+
+  // Adjust node properties for mobile (isMobile and isSmallMobile already declared at top)
+  // More spacing on mobile to prevent bunching
+  const nodePad = isSmallMobile ? 10 : (isMobile ? 15 : 25);
+  const nodeThickness = isSmallMobile ? 18 : (isMobile ? 22 : 25);
+  
+  const sankeyData = {
+    type: "sankey",
+    orientation: "h", // Horizontal (left to right)
+    arrangement: "snap", // Snap arrangement for cleaner flow
+    node: {
+      pad: nodePad,
+      thickness: nodeThickness,
+      line: {
+        color: "#334155",
+        width: isMobile ? 0.3 : 0.5
+      },
+      label: labels,
+      color: nodeColors,
+      labelfont: {
+        size: isSmallMobile ? 10 : (isMobile ? 11 : 11) // Larger fonts on mobile for readability
+      },
+      // Position labels to avoid overlap
+      labelposition: "right",
+      labelside: "right"
+    },
+    link: {
+      source: source,
+      target: target,
+      value: value,
+      color: linkColors,
+      hovertemplate: "$%{value:,.2f}<extra></extra>"
+    }
+  };
+
+  // Get container dimensions before creating layout (for mobile width calculation)
+  const chartDiv = document.getElementById("sankeyChart");
+  if (!chartDiv) return;
+  
+  const container = chartDiv.parentElement;
+  const chartBox = container?.parentElement;
+  
+  // Layout configuration (isMobile and isSmallMobile already declared at top)
+  const layout = {
+    title: {
+      text: "",
+      font: {
+        color: "#e2e8f0",
+        size: 16
+      }
+    },
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor: "rgba(0,0,0,0)",
+    font: {
+      color: getComputedStyle(document.documentElement).getPropertyValue('--text-primary') || '#e2e8f0',
+      size: isSmallMobile ? 9 : (isMobile ? 10 : 11)
+    },
+    margin: {
+      l: isSmallMobile ? 0 : (isMobile ? 0 : 30),
+      r: isSmallMobile ? 0 : (isMobile ? 0 : 180), // No side margins on mobile to maximize space
+      t: isSmallMobile ? 10 : (isMobile ? 15 : 20),
+      b: isSmallMobile ? 10 : (isMobile ? 15 : 20),
+      pad: isSmallMobile ? 8 : (isMobile ? 12 : 15) // More padding between nodes on mobile
+    },
+    autosize: true, // Auto-size to fit container
+    width: null,
+    height: isSmallMobile ? 600 : (isMobile ? 700 : null) // Taller height on mobile for better spacing
+  };
+
+  const config = {
+    displayModeBar: true, // Show mode bar for zoom controls
+    modeBarButtonsToAdd: ['zoomIn2d', 'zoomOut2d', 'resetScale2d', 'pan2d'], // Add zoom and pan buttons
+    modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'], // Remove unnecessary buttons
+    responsive: true,
+    autosizable: true,
+    staticPlot: false,
+    // Enable zoom and pan - Sankey charts need these settings
+    scrollZoom: 'cartesian', // Enable mouse wheel zoom
+    doubleClick: 'reset', // Double-click to reset zoom
+    dragMode: 'pan' // Default to pan mode, users can switch to zoom via toolbar
+  };
+
+  // Clear any existing plot before rendering
+  sankeyChartDiv = chartDiv;
+  
+  // Always create new plot to ensure proper sizing
+  chartDiv.innerHTML = "";
+  
+  // Ensure container has proper dimensions and prevent overflow
+  if (container) {
+    container.style.width = '100%';
+    container.style.maxWidth = '100%';
+    container.style.overflow = 'hidden';
+    container.style.boxSizing = 'border-box';
+  }
+  
+  if (chartBox) {
+    chartBox.style.width = '100%';
+    chartBox.style.maxWidth = '100%';
+    chartBox.style.overflow = 'hidden';
+    chartBox.style.boxSizing = 'border-box';
+  }
+  
+  Plotly.newPlot("sankeyChart", [sankeyData], layout, config).then(() => {
+    // After plot is created, resize it to fit container
+    setTimeout(() => {
+      Plotly.Plots.resize(chartDiv);
+      // Force a second resize after a short delay to ensure proper sizing
+      setTimeout(() => {
+        Plotly.Plots.resize(chartDiv);
+      }, 200);
+    }, 100);
+  });
+}
+
+// Store reference to Sankey chart for resize handling
+let sankeyChartDiv = null;
+
+// Handle window resize for all charts
+let resizeTimeout;
+function handleChartsResize() {
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(() => {
+    // Resize Sankey chart
+    if (sankeyChartDiv && sankeyChartDiv.data) {
+      // Ensure container dimensions are correct before resizing
+      const container = sankeyChartDiv.parentElement;
+      if (container) {
+        container.style.width = '100%';
+        container.style.maxWidth = '100%';
+      }
+      Plotly.Plots.resize(sankeyChartDiv);
+      // Force a second resize after a brief delay for mobile
+      if (window.innerWidth <= 768) {
+        setTimeout(() => {
+          Plotly.Plots.resize(sankeyChartDiv);
+        }, 100);
+      }
+    }
+    
+    // Resize Chart.js charts
+    if (categoryChart) {
+      categoryChart.resize();
+    }
+    if (monthlyChart) {
+      monthlyChart.resize();
+    }
+  }, 250);
+}
+
+// Add window resize listener
+window.addEventListener('resize', handleChartsResize);
+
+/* ---------- CENTRAL RENDER ---------- */
+
+/* ---------- THEME TOGGLE ---------- */
+function initTheme() {
+  const savedTheme = localStorage.getItem('budgetDashboardTheme') || 'dark';
+  document.documentElement.setAttribute('data-theme', savedTheme);
+}
+
+function toggleTheme() {
+  const themeSelect = document.getElementById('themeSelect');
+  if (!themeSelect) return;
+  
+  const newTheme = themeSelect.value;
+  document.documentElement.setAttribute('data-theme', newTheme);
+  localStorage.setItem('budgetDashboardTheme', newTheme);
+  renderAll(); // Re-render charts with new theme
+}
+
+/* ---------- RECURRING TRANSACTIONS ---------- */
+function renderRecurringTransactions() {
+  const container = document.getElementById('recurringList');
+  if (!container) return;
+  
+  const recurring = getActiveData().recurringTransactions || [];
+  container.innerHTML = '';
+  
+  if (recurring.length === 0) {
+    container.innerHTML = '<p style="color: var(--text-secondary); font-size: 14px;">No recurring transactions yet.</p>';
+    return;
+  }
+  
+  recurring.forEach(r => {
+    const div = document.createElement('div');
+    div.className = 'recurring-item';
+    const nextDate = new Date(r.nextDate);
+    const daysUntil = Math.ceil((nextDate - new Date()) / (1000 * 60 * 60 * 24));
+    div.innerHTML = `
+      <div>
+        <strong>${r.description}</strong> - ${formatMoney(r.amount)}
+        <span class="recurring-badge">${r.frequency}</span>
+        <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
+          Next: ${formatDate(r.nextDate)} (${daysUntil} days)
+        </div>
+      </div>
+      <div>
+        <button class="editRecurringBtn" data-id="${r.id}" style="margin-right: 6px;">Edit</button>
+        <button class="deleteRecurringBtn" data-id="${r.id}">Delete</button>
+      </div>
+    `;
+    container.appendChild(div);
+  });
+  
+  container.querySelectorAll('.editRecurringBtn').forEach(btn => {
+    btn.addEventListener('click', () => editRecurring(btn.dataset.id));
+  });
+  
+  container.querySelectorAll('.deleteRecurringBtn').forEach(btn => {
+    btn.addEventListener('click', () => deleteRecurring(btn.dataset.id));
+  });
+}
+
+function addRecurring() {
+  document.getElementById('recurringModalTitle').textContent = 'Add Recurring Transaction';
+  document.getElementById('recurringDescInput').value = '';
+  document.getElementById('recurringAmountInput').value = '';
+  document.getElementById('recurringTypeInput').value = 'expense';
+  document.getElementById('recurringFrequencyInput').value = 'monthly';
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  document.getElementById('recurringNextDateInput').value = tomorrow.toISOString().slice(0, 10);
+  
+  const cats = getActiveData().categories;
+  const catSelect = document.getElementById('recurringCategoryInput');
+  catSelect.innerHTML = cats.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+  if (cats.length) catSelect.value = cats[0].id;
+  
+  document.getElementById('deleteRecurringBtn').style.display = 'none';
+  document.getElementById('recurringModal').classList.add('show');
+  editingRecurringId = null;
+}
+
+let editingRecurringId = null;
+
+function editRecurring(id) {
+  const recurring = getActiveData().recurringTransactions || [];
+  const r = recurring.find(x => x.id === id);
+  if (!r) return;
+  
+  editingRecurringId = id;
+  document.getElementById('recurringModalTitle').textContent = 'Edit Recurring Transaction';
+  document.getElementById('recurringDescInput').value = r.description;
+  document.getElementById('recurringAmountInput').value = r.amount;
+  document.getElementById('recurringTypeInput').value = r.type;
+  document.getElementById('recurringFrequencyInput').value = r.frequency;
+  document.getElementById('recurringNextDateInput').value = r.nextDate;
+  
+  const cats = getActiveData().categories;
+  const catSelect = document.getElementById('recurringCategoryInput');
+  catSelect.innerHTML = cats.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+  catSelect.value = r.categoryId;
+  
+  document.getElementById('deleteRecurringBtn').style.display = 'block';
+  document.getElementById('recurringModal').classList.add('show');
+}
+
+async function saveRecurring() {
+  const desc = document.getElementById('recurringDescInput').value.trim();
+  const amount = parseFloat(document.getElementById('recurringAmountInput').value);
+  const type = document.getElementById('recurringTypeInput').value;
+  const categoryId = document.getElementById('recurringCategoryInput').value;
+  const frequency = document.getElementById('recurringFrequencyInput').value;
+  const nextDate = document.getElementById('recurringNextDateInput').value;
+  
+  if (!desc || !amount || !nextDate) {
+    showToast('Please fill all required fields', 'Error');
+    return;
+  }
+  
+  if (useSupabase && currentBudget && recurringService) {
+    // Use Supabase
+    try {
+      const recurringData = {
+        description: desc,
+        amount,
+        type,
+        category_id: categoryId || null,
+        frequency,
+        next_date: nextDate
+      };
+      
+      if (editingRecurringId) {
+        const { error } = await recurringService.updateRecurringTransaction(editingRecurringId, recurringData);
+        if (error) {
+          showToast(`Error: ${error.message}`, 'Error');
+          return;
+        }
+        showToast('Recurring transaction updated');
+      } else {
+        const { error } = await recurringService.createRecurringTransaction(currentBudget.id, recurringData);
+        if (error) {
+          showToast(`Error: ${error.message}`, 'Error');
+          return;
+        }
+        showToast('Recurring transaction added');
+      }
+      
+      await loadDataFromSupabase();
+    } catch (error) {
+      console.error('Error saving recurring transaction:', error);
+      showToast(`Error saving recurring transaction: ${error.message}`, 'Error');
+      return;
+    }
+  } else {
+    // Use localStorage (fallback)
+    const data = getActiveData();
+    if (!data.recurringTransactions) data.recurringTransactions = [];
+    
+    if (editingRecurringId) {
+      const r = data.recurringTransactions.find(x => x.id === editingRecurringId);
+      if (r) {
+        r.description = desc;
+        r.amount = amount;
+        r.type = type;
+        r.categoryId = categoryId;
+        r.frequency = frequency;
+        r.nextDate = nextDate;
+      }
+      showToast('Recurring transaction updated');
+    } else {
+      data.recurringTransactions.push({
+        id: 'recur_' + Math.random().toString(36).slice(2),
+        description: desc,
+        amount,
+        type,
+        categoryId,
+        frequency,
+        nextDate
+      });
+      showToast('Recurring transaction added');
+    }
+    saveState();
+  }
+  
+  closeRecurringModal();
+  renderAll();
+}
+
+async function deleteRecurring(id) {
+  if (!confirm('Delete this recurring transaction?')) return;
+  
+  if (useSupabase && recurringService) {
+    // Use Supabase
+    try {
+      const { error } = await recurringService.deleteRecurringTransaction(id);
+      if (error) {
+        showToast(`Error: ${error.message}`, 'Error');
+        return;
+      }
+      showToast('Recurring transaction deleted');
+      await loadDataFromSupabase();
+    } catch (error) {
+      console.error('Error deleting recurring transaction:', error);
+      showToast(`Error deleting recurring transaction: ${error.message}`, 'Error');
+      return;
+    }
+  } else {
+    // Use localStorage (fallback)
+    const data = getActiveData();
+    if (data.recurringTransactions) {
+      data.recurringTransactions = data.recurringTransactions.filter(r => r.id !== id);
+    }
+    saveState();
+    showToast('Recurring transaction deleted');
+  }
+  
+  renderAll();
+}
+
+function closeRecurringModal() {
+  document.getElementById('recurringModal').classList.remove('show');
+  editingRecurringId = null;
+}
+
+/* ---------- DEBT TRACKING ---------- */
+function renderDebts() {
+  const container = document.getElementById('debtList');
+  if (!container) return;
+  
+  const debts = getActiveData().debts || [];
+  container.innerHTML = '';
+  
+  if (debts.length === 0) {
+    container.innerHTML = '<p style="color: var(--text-secondary); font-size: 14px;">No debts tracked yet.</p>';
+    return;
+  }
+  
+  debts.forEach(d => {
+    const div = document.createElement('div');
+    div.className = 'debt-item';
+    const percentPaid = d.originalBalance ? ((d.originalBalance - d.currentBalance) / d.originalBalance * 100) : 0;
+    div.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <div>
+          <strong>${d.name}</strong>
+          <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
+            Balance: ${formatMoney(d.currentBalance)} | Interest: ${d.interestRate}% | Min Payment: ${formatMoney(d.minPayment)}
+          </div>
+        </div>
+        <div>
+          <button class="editDebtBtn" data-id="${d.id}" style="margin-right: 6px;">Edit</button>
+          <button class="deleteDebtBtn" data-id="${d.id}">Delete</button>
+        </div>
+      </div>
+      <div class="debt-progress">
+        <div class="debt-progress-fill" style="width: ${Math.min(100, percentPaid)}%"></div>
+      </div>
+      <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
+        ${percentPaid.toFixed(1)}% paid off
+      </div>
+    `;
+    container.appendChild(div);
+  });
+  
+  container.querySelectorAll('.editDebtBtn').forEach(btn => {
+    btn.addEventListener('click', () => editDebt(btn.dataset.id));
+  });
+  
+  container.querySelectorAll('.deleteDebtBtn').forEach(btn => {
+    btn.addEventListener('click', () => deleteDebt(btn.dataset.id));
+  });
+}
+
+let editingDebtId = null;
+
+function addDebt() {
+  document.getElementById('debtModalTitle').textContent = 'Add Debt';
+  document.getElementById('debtNameInput').value = '';
+  document.getElementById('debtBalanceInput').value = '';
+  document.getElementById('debtInterestInput').value = '';
+  document.getElementById('debtMinPaymentInput').value = '';
+  document.getElementById('debtTargetDateInput').value = '';
+  document.getElementById('deleteDebtBtn').style.display = 'none';
+  document.getElementById('debtModal').classList.add('show');
+  editingDebtId = null;
+}
+
+function editDebt(id) {
+  const debts = getActiveData().debts || [];
+  const d = debts.find(x => x.id === id);
+  if (!d) return;
+  
+  editingDebtId = id;
+  document.getElementById('debtModalTitle').textContent = 'Edit Debt';
+  document.getElementById('debtNameInput').value = d.name;
+  document.getElementById('debtBalanceInput').value = d.currentBalance;
+  document.getElementById('debtInterestInput').value = d.interestRate || 0;
+  document.getElementById('debtMinPaymentInput').value = d.minPayment || 0;
+  document.getElementById('debtTargetDateInput').value = d.targetDate || '';
+  document.getElementById('deleteDebtBtn').style.display = 'block';
+  document.getElementById('debtModal').classList.add('show');
+}
+
+async function saveDebt() {
+  const name = document.getElementById('debtNameInput').value.trim();
+  const balance = parseFloat(document.getElementById('debtBalanceInput').value);
+  const interest = parseFloat(document.getElementById('debtInterestInput').value) || 0;
+  const minPayment = parseFloat(document.getElementById('debtMinPaymentInput').value) || 0;
+  const targetDate = document.getElementById('debtTargetDateInput').value;
+  
+  if (!name || isNaN(balance) || balance <= 0) {
+    showToast('Please fill all required fields', 'Error');
+    return;
+  }
+  
+  if (useSupabase && currentBudget && debtService) {
+    // Use Supabase
+    try {
+      const debtData = {
+        name,
+        current_balance: balance,
+        interest_rate: interest,
+        min_payment: minPayment,
+        target_date: targetDate || null
+      };
+      
+      if (editingDebtId) {
+        // For update, we might need to preserve original_balance
+        const { error } = await debtService.updateDebt(editingDebtId, debtData);
+        if (error) {
+          showToast(`Error: ${error.message}`, 'Error');
+          return;
+        }
+        showToast('Debt updated');
+      } else {
+        debtData.original_balance = balance;
+        const { error } = await debtService.createDebt(currentBudget.id, debtData);
+        if (error) {
+          showToast(`Error: ${error.message}`, 'Error');
+          return;
+        }
+        showToast('Debt added');
+      }
+      
+      await loadDataFromSupabase();
+    } catch (error) {
+      console.error('Error saving debt:', error);
+      showToast(`Error saving debt: ${error.message}`, 'Error');
+      return;
+    }
+  } else {
+    // Use localStorage (fallback)
+    const data = getActiveData();
+    if (!data.debts) data.debts = [];
+    
+    if (editingDebtId) {
+      const d = data.debts.find(x => x.id === editingDebtId);
+      if (d) {
+        d.name = name;
+        d.currentBalance = balance;
+        d.interestRate = interest;
+        d.minPayment = minPayment;
+        d.targetDate = targetDate || undefined;
+        if (!d.originalBalance) d.originalBalance = balance;
+      }
+      showToast('Debt updated');
+    } else {
+      data.debts.push({
+        id: 'debt_' + Math.random().toString(36).slice(2),
+        name,
+        currentBalance: balance,
+        originalBalance: balance,
+        interestRate: interest,
+        minPayment,
+        targetDate: targetDate || undefined
+      });
+      showToast('Debt added');
+    }
+    saveState();
+  }
+  
+  closeDebtModal();
+  renderAll();
+}
+
+async function deleteDebt(id) {
+  if (!confirm('Delete this debt?')) return;
+  
+  if (useSupabase && debtService) {
+    // Use Supabase
+    try {
+      const { error } = await debtService.deleteDebt(id);
+      if (error) {
+        showToast(`Error: ${error.message}`, 'Error');
+        return;
+      }
+      showToast('Debt deleted');
+      await loadDataFromSupabase();
+    } catch (error) {
+      console.error('Error deleting debt:', error);
+      showToast(`Error deleting debt: ${error.message}`, 'Error');
+      return;
+    }
+  } else {
+    // Use localStorage (fallback)
+    const data = getActiveData();
+    if (data.debts) {
+      data.debts = data.debts.filter(d => d.id !== id);
+    }
+    saveState();
+    showToast('Debt deleted');
+  }
+  
+  renderAll();
+}
+
+function closeDebtModal() {
+  document.getElementById('debtModal').classList.remove('show');
+  editingDebtId = null;
+}
+
+/* ---------- FINANCIAL GOALS ---------- */
+function renderFinancialGoals() {
+  const container = document.getElementById('financialGoalsList');
+  if (!container) return;
+  
+  const goals = getActiveData().financialGoals || [];
+  container.innerHTML = '';
+  
+  if (goals.length === 0) {
+    container.innerHTML = '<p style="color: var(--text-secondary); font-size: 14px;">No financial goals yet.</p>';
+    return;
+  }
+  
+  goals.forEach(g => {
+    const div = document.createElement('div');
+    div.className = 'goal-item';
+    const percent = Math.min(100, (g.current / g.target) * 100);
+    div.innerHTML = `
+      <div class="goal-label">
+        <b>${g.name}</b> (${g.type}) — ${formatMoney(g.current)} / ${formatMoney(g.target)}
+        ${g.targetDate ? `<div style="font-size: 12px; color: var(--text-secondary);">Target: ${formatDate(g.targetDate)}</div>` : ''}
+      </div>
+      <div class="goal-bar"><div class="goal-fill" style="width:${percent}%"></div></div>
+      <button class="editFinancialGoalBtn" data-id="${g.id}" style="margin-top:6px;">Edit</button>
+      <button class="deleteFinancialGoalBtn" data-id="${g.id}" style="margin-left:6px;">Delete</button>
+    `;
+    container.appendChild(div);
+  });
+  
+  container.querySelectorAll('.editFinancialGoalBtn').forEach(btn => {
+    btn.addEventListener('click', () => editFinancialGoal(btn.dataset.id));
+  });
+  
+  container.querySelectorAll('.deleteFinancialGoalBtn').forEach(btn => {
+    btn.addEventListener('click', () => deleteFinancialGoal(btn.dataset.id));
+  });
+}
+
+let editingFinancialGoalId = null;
+
+function addFinancialGoal() {
+  document.getElementById('financialGoalModalTitle').textContent = 'Add Financial Goal';
+  document.getElementById('financialGoalNameInput').value = '';
+  document.getElementById('financialGoalTypeInput').value = 'savings';
+  document.getElementById('financialGoalTargetInput').value = '';
+  document.getElementById('financialGoalCurrentInput').value = '0';
+  document.getElementById('financialGoalDateInput').value = '';
+  document.getElementById('deleteFinancialGoalBtn').style.display = 'none';
+  document.getElementById('financialGoalModal').classList.add('show');
+  editingFinancialGoalId = null;
+}
+
+function editFinancialGoal(id) {
+  const goals = getActiveData().financialGoals || [];
+  const g = goals.find(x => x.id === id);
+  if (!g) return;
+  
+  editingFinancialGoalId = id;
+  document.getElementById('financialGoalModalTitle').textContent = 'Edit Financial Goal';
+  document.getElementById('financialGoalNameInput').value = g.name;
+  document.getElementById('financialGoalTypeInput').value = g.type;
+  document.getElementById('financialGoalTargetInput').value = g.target;
+  document.getElementById('financialGoalCurrentInput').value = g.current;
+  document.getElementById('financialGoalDateInput').value = g.targetDate || '';
+  document.getElementById('deleteFinancialGoalBtn').style.display = 'block';
+  document.getElementById('financialGoalModal').classList.add('show');
+}
+
+async function saveFinancialGoal() {
+  const name = document.getElementById('financialGoalNameInput').value.trim();
+  const type = document.getElementById('financialGoalTypeInput').value;
+  const target = parseFloat(document.getElementById('financialGoalTargetInput').value);
+  const current = parseFloat(document.getElementById('financialGoalCurrentInput').value) || 0;
+  const targetDate = document.getElementById('financialGoalDateInput').value;
+  
+  if (!name || !target || target <= 0) {
+    showToast('Please fill all required fields', 'Error');
+    return;
+  }
+  
+  if (useSupabase && currentBudget && goalService) {
+    // Use Supabase
+    try {
+      const goalData = {
+        name,
+        type,
+        target,
+        current,
+        target_date: targetDate || null
+      };
+      
+      if (editingFinancialGoalId) {
+        const { error } = await goalService.updateFinancialGoal(editingFinancialGoalId, goalData);
+        if (error) {
+          showToast(`Error: ${error.message}`, 'Error');
+          return;
+        }
+        showToast('Financial goal updated');
+      } else {
+        const { error } = await goalService.createFinancialGoal(currentBudget.id, goalData);
+        if (error) {
+          showToast(`Error: ${error.message}`, 'Error');
+          return;
+        }
+        showToast('Financial goal added');
+      }
+      
+      await loadDataFromSupabase();
+    } catch (error) {
+      console.error('Error saving financial goal:', error);
+      showToast(`Error saving financial goal: ${error.message}`, 'Error');
+      return;
+    }
+  } else {
+    // Use localStorage (fallback)
+    const data = getActiveData();
+    if (!data.financialGoals) data.financialGoals = [];
+    
+    if (editingFinancialGoalId) {
+      const g = data.financialGoals.find(x => x.id === editingFinancialGoalId);
+      if (g) {
+        g.name = name;
+        g.type = type;
+        g.target = target;
+        g.current = current;
+        g.targetDate = targetDate || undefined;
+      }
+      showToast('Financial goal updated');
+    } else {
+      data.financialGoals.push({
+        id: 'fgoal_' + Math.random().toString(36).slice(2),
+        name,
+        type,
+        target,
+        current,
+        targetDate: targetDate || undefined
+      });
+      showToast('Financial goal added');
+    }
+    saveState();
+  }
+  
+  closeFinancialGoalModal();
+  renderAll();
+}
+
+async function deleteFinancialGoal(id) {
+  if (!confirm('Delete this financial goal?')) return;
+  
+  if (useSupabase && goalService) {
+    // Use Supabase
+    try {
+      const { error } = await goalService.deleteFinancialGoal(id);
+      if (error) {
+        showToast(`Error: ${error.message}`, 'Error');
+        return;
+      }
+      showToast('Financial goal deleted');
+      await loadDataFromSupabase();
+    } catch (error) {
+      console.error('Error deleting financial goal:', error);
+      showToast(`Error deleting financial goal: ${error.message}`, 'Error');
+      return;
+    }
+  } else {
+    // Use localStorage (fallback)
+    const data = getActiveData();
+    if (data.financialGoals) {
+      data.financialGoals = data.financialGoals.filter(g => g.id !== id);
+    }
+    saveState();
+    showToast('Financial goal deleted');
+  }
+  
+  renderAll();
+}
+
+function closeFinancialGoalModal() {
+  document.getElementById('financialGoalModal').classList.remove('show');
+  editingFinancialGoalId = null;
+}
+
+/* ---------- BILL REMINDERS ---------- */
+function renderBillReminders() {
+  const container = document.getElementById('remindersList');
+  if (!container) return;
+  
+  const recurring = getActiveData().recurringTransactions || [];
+  const reminders = [];
+  
+  recurring.forEach(r => {
+    if (r.type === 'expense') {
+      const nextDate = new Date(r.nextDate);
+      const today = new Date();
+      const daysUntil = Math.ceil((nextDate - today) / (1000 * 60 * 60 * 24));
+      
+      if (daysUntil <= 7) {
+        reminders.push({ ...r, daysUntil });
+      }
+    }
+  });
+  
+  reminders.sort((a, b) => a.daysUntil - b.daysUntil);
+  
+  container.innerHTML = '';
+  
+  if (reminders.length === 0) {
+    container.innerHTML = '<p style="color: var(--text-secondary); font-size: 14px;">No upcoming bills in the next 7 days.</p>';
+    return;
+  }
+  
+  reminders.forEach(rem => {
+    const div = document.createElement('div');
+    div.className = `reminder-item ${rem.daysUntil <= 3 ? 'urgent' : ''}`;
+    div.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          <strong>${rem.description}</strong>
+          <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
+            ${formatMoney(rem.amount)} due ${formatDate(rem.nextDate)} (${rem.daysUntil} ${rem.daysUntil === 1 ? 'day' : 'days'})
+          </div>
+        </div>
+      </div>
+    `;
+    container.appendChild(div);
+  });
+}
+
+/* ---------- SPENDING REPORTS & ANALYTICS ---------- */
+function renderReports() {
+  const container = document.getElementById('reportsContent');
+  if (!container) return;
+  
+  const data = getActiveData();
+  const transactions = data.transactions || [];
+  const now = new Date();
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const lastMonthStr = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, '0')}`;
+  
+  // Current month stats
+  const currentMonthTx = transactions.filter(t => t.date.startsWith(currentMonth));
+  const currentIncome = currentMonthTx.filter(t => t.type === 'income').reduce((sum, t) => sum + t.amount, 0);
+  const currentExpenses = currentMonthTx.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
+  
+  // Last month stats
+  const lastMonthTx = transactions.filter(t => t.date.startsWith(lastMonthStr));
+  const lastIncome = lastMonthTx.filter(t => t.type === 'income').reduce((sum, t) => sum + t.amount, 0);
+  const lastExpenses = lastMonthTx.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
+  
+  // Category breakdown
+  const categoryTotals = {};
+  currentMonthTx.forEach(t => {
+    if (t.type === 'expense') {
+      categoryTotals[t.categoryId] = (categoryTotals[t.categoryId] || 0) + t.amount;
+    }
+  });
+  
+  const topCategories = Object.entries(categoryTotals)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([catId, total]) => {
+      const cat = data.categories.find(c => c.id === catId);
+      return { name: cat ? cat.name : 'Unknown', total };
+    });
+  
+  container.innerHTML = `
+    <div class="report-section">
+      <h3 style="margin-top: 0;">Monthly Comparison</h3>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+        <div>
+          <div style="font-size: 12px; color: var(--text-secondary);">This Month</div>
+          <div style="font-size: 18px; font-weight: bold; margin-top: 4px;">Income: ${formatMoney(currentIncome)}</div>
+          <div style="font-size: 18px; font-weight: bold;">Expenses: ${formatMoney(currentExpenses)}</div>
+          <div style="font-size: 18px; font-weight: bold; color: ${currentIncome - currentExpenses >= 0 ? 'var(--success)' : 'var(--danger)'};">
+            Net: ${formatMoney(currentIncome - currentExpenses)}
+          </div>
+        </div>
+        <div>
+          <div style="font-size: 12px; color: var(--text-secondary);">Last Month</div>
+          <div style="font-size: 18px; font-weight: bold; margin-top: 4px;">Income: ${formatMoney(lastIncome)}</div>
+          <div style="font-size: 18px; font-weight: bold;">Expenses: ${formatMoney(lastExpenses)}</div>
+          <div style="font-size: 18px; font-weight: bold; color: ${lastIncome - lastExpenses >= 0 ? 'var(--success)' : 'var(--danger)'};">
+            Net: ${formatMoney(lastIncome - lastExpenses)}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="report-section">
+      <h3>Top Spending Categories (This Month)</h3>
+      ${topCategories.length > 0 ? topCategories.map(cat => `
+        <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border);">
+          <span>${cat.name}</span>
+          <strong>${formatMoney(cat.total)}</strong>
+        </div>
+      `).join('') : '<p style="color: var(--text-secondary);">No expenses this month</p>'}
+    </div>
+  `;
+}
+
+/* ---------- SPENDING INSIGHTS ---------- */
+function renderInsights() {
+  const container = document.getElementById('insightsContent');
+  if (!container) return;
+  
+  const data = getActiveData();
+  const transactions = data.transactions || [];
+  const now = new Date();
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const lastMonthStr = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, '0')}`;
+  
+  const currentMonthTx = transactions.filter(t => t.date.startsWith(currentMonth));
+  const lastMonthTx = transactions.filter(t => t.date.startsWith(lastMonthStr));
+  
+  // Category comparison
+  const currentCategoryTotals = {};
+  const lastCategoryTotals = {};
+  
+  currentMonthTx.forEach(t => {
+    if (t.type === 'expense') {
+      currentCategoryTotals[t.categoryId] = (currentCategoryTotals[t.categoryId] || 0) + t.amount;
+    }
+  });
+  
+  lastMonthTx.forEach(t => {
+    if (t.type === 'expense') {
+      lastCategoryTotals[t.categoryId] = (lastCategoryTotals[t.categoryId] || 0) + t.amount;
+    }
+  });
+  
+  const insights = [];
+  
+  // Compare categories
+  Object.keys(currentCategoryTotals).forEach(catId => {
+    const current = currentCategoryTotals[catId];
+    const last = lastCategoryTotals[catId] || 0;
+    if (last > 0) {
+      const change = ((current - last) / last) * 100;
+      if (Math.abs(change) >= 20) {
+        const cat = data.categories.find(c => c.id === catId);
+        if (cat) {
+          insights.push({
+            type: change > 0 ? 'warning' : 'positive',
+            message: `You spent ${Math.abs(change).toFixed(0)}% ${change > 0 ? 'more' : 'less'} on ${cat.name} this month compared to last month.`
+          });
+        }
+      }
+    }
+  });
+  
+  // Total spending comparison
+  const currentTotal = currentMonthTx.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
+  const lastTotal = lastMonthTx.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
+  if (lastTotal > 0) {
+    const change = ((currentTotal - lastTotal) / lastTotal) * 100;
+    if (Math.abs(change) >= 10) {
+      insights.push({
+        type: change > 0 ? 'danger' : 'positive',
+        message: `Your total spending is ${Math.abs(change).toFixed(0)}% ${change > 0 ? 'higher' : 'lower'} than last month.`
+      });
+    }
+  }
+  
+  // Budget warnings
+  data.categories.forEach(cat => {
+    if (cat.monthlyBudget > 0) {
+      const spent = currentCategoryTotals[cat.id] || 0;
+      const percentage = (spent / cat.monthlyBudget) * 100;
+      if (percentage >= 90) {
+        insights.push({
+          type: percentage >= 100 ? 'danger' : 'warning',
+          message: `${cat.name} budget: ${percentage.toFixed(0)}% used (${formatMoney(spent)} / ${formatMoney(cat.monthlyBudget)})`
+        });
+      }
+    }
+  });
+  
+  container.innerHTML = '';
+  
+  if (insights.length === 0) {
+    container.innerHTML = '<p style="color: var(--text-secondary); font-size: 14px;">No insights available yet. Add more transactions to see spending patterns.</p>';
+    return;
+  }
+  
+  insights.forEach(insight => {
+    const div = document.createElement('div');
+    div.className = `insight-card ${insight.type}`;
+    div.textContent = insight.message;
+    container.appendChild(div);
+  });
+}
+
+/* ---------- Calendar Heatmap ---------- */
+function renderCalendarHeatmap() {
+  const container = document.getElementById("calendarHeatmap");
+  if (!container) return;
+  
+  const tx = getFilteredTransactions();
+  const [year, month] = viewedMonth.split("-");
+  const yearNum = parseInt(year, 10);
+  const monthNum = parseInt(month, 10);
+  
+  // Get first day of month and number of days
+  const firstDay = new Date(yearNum, monthNum - 1, 1);
+  const lastDay = new Date(yearNum, monthNum, 0);
+  const daysInMonth = lastDay.getDate();
+  const startDayOfWeek = firstDay.getDay(); // 0 = Sunday, 6 = Saturday
+  
+  // Calculate net (income - expenses) per day
+  const netByDay = {};
+  tx.forEach(t => {
+    const txDate = new Date(t.date);
+    if (txDate.getFullYear() === yearNum && txDate.getMonth() === monthNum - 1) {
+      const day = txDate.getDate();
+      if (!netByDay[day]) {
+        netByDay[day] = { income: 0, expenses: 0, net: 0 };
+      }
+      if (t.type === "income") {
+        netByDay[day].income += t.amount;
+      } else if (t.type === "expense") {
+        netByDay[day].expenses += t.amount;
+      }
+      netByDay[day].net = netByDay[day].income - netByDay[day].expenses;
+    }
+  });
+  
+  // Find max absolute net for color scaling
+  const allNets = Object.values(netByDay).map(d => Math.abs(d.net));
+  const maxAbsNet = Math.max(...allNets, 0);
+  
+  // Day names
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  
+  // Create calendar HTML
+  let html = '<div class="calendar-grid">';
+  
+  // Day headers
+  dayNames.forEach(day => {
+    html += `<div class="calendar-day-header">${day}</div>`;
+  });
+  
+  // Empty cells for days before month starts
+  for (let i = 0; i < startDayOfWeek; i++) {
+    html += '<div class="calendar-day empty"></div>';
+  }
+  
+  // Days of month
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dayData = netByDay[day] || { income: 0, expenses: 0, net: 0 };
+    const net = dayData.net;
+    
+    // Calculate intensity based on absolute net value
+    const intensity = maxAbsNet > 0 ? Math.min(1, Math.abs(net) / maxAbsNet) : 0;
+    
+    let bgColor;
+    let textColor;
+    
+    if (net > 0) {
+      // Positive net: green gradient (darker = more positive)
+      // Start from light green (#d1fae5) to dark green (#059669)
+      const r = Math.floor(209 - (intensity * 150)); // 209 -> 59
+      const g = Math.floor(250 - (intensity * 190)); // 250 -> 60
+      const b = Math.floor(229 - (intensity * 160)); // 229 -> 69
+      bgColor = `rgba(${r}, ${g}, ${b}, ${Math.max(0.4, 0.3 + intensity * 0.5)})`;
+      textColor = intensity > 0.6 ? '#fff' : 'var(--text-primary)';
+    } else if (net < 0) {
+      // Negative net: red gradient (darker = more negative)
+      // Start from light red (#fee2e2) to dark red (#dc2626)
+      const r = Math.floor(254 - (intensity * 30)); // 254 -> 220
+      const g = Math.floor(226 - (intensity * 160)); // 226 -> 38
+      const b = Math.floor(226 - (intensity * 160)); // 226 -> 38
+      bgColor = `rgba(${r}, ${g}, ${b}, ${Math.max(0.4, 0.3 + intensity * 0.5)})`;
+      textColor = intensity > 0.6 ? '#fff' : 'var(--text-primary)';
+    } else {
+      // Zero net: neutral gray
+      bgColor = 'rgba(148, 163, 184, 0.2)';
+      textColor = 'var(--text-primary)';
+    }
+    
+    const dateStr = `${yearNum}-${month.padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const dateFormatted = formatDate(dateStr);
+    const netFormatted = formatMoney(net);
+    const incomeFormatted = formatMoney(dayData.income);
+    const expensesFormatted = formatMoney(dayData.expenses);
+    
+    html += `
+      <div class="calendar-day" 
+           style="background: ${bgColor}; color: ${textColor};"
+           data-date="${dateStr}"
+           data-net="${net}"
+           data-tooltip="${dateFormatted}: Net ${netFormatted} (Income: ${incomeFormatted}, Expenses: ${expensesFormatted})">
+        ${day}
+      </div>
+    `;
+  }
+  
+  html += '</div>';
+  
+  // Legend
+  html += '<div class="calendar-legend">';
+  html += '<span style="font-weight: 600; margin-right: 8px;">Net:</span>';
+  
+  // Positive net legend (green gradient)
+  html += '<span style="margin-right: 12px; color: var(--text-secondary); font-size: 11px;">Positive:</span>';
+  const positiveSteps = [
+    { label: '+$100+', value: 1 },
+    { label: '+$50', value: 0.5 },
+    { label: '+$25', value: 0.25 }
+  ];
+  
+  positiveSteps.forEach(step => {
+    const r = Math.floor(209 - (step.value * 150));
+    const g = Math.floor(250 - (step.value * 190));
+    const b = Math.floor(229 - (step.value * 160));
+    const bgColor = `rgba(${r}, ${g}, ${b}, ${Math.max(0.4, 0.3 + step.value * 0.5)})`;
+    
+    html += `
+      <div class="calendar-legend-item">
+        <div class="calendar-legend-color" style="background: ${bgColor};"></div>
+        <span>${step.label}</span>
+      </div>
+    `;
+  });
+  
+  // Zero
+  html += `
+    <div class="calendar-legend-item">
+      <div class="calendar-legend-color" style="background: rgba(148, 163, 184, 0.2);"></div>
+      <span>$0</span>
+    </div>
+  `;
+  
+  // Negative net legend (red gradient)
+  html += '<span style="margin-left: 12px; margin-right: 12px; color: var(--text-secondary); font-size: 11px;">Negative:</span>';
+  const negativeSteps = [
+    { label: '-$25', value: 0.25 },
+    { label: '-$50', value: 0.5 },
+    { label: '-$100+', value: 1 }
+  ];
+  
+  negativeSteps.forEach(step => {
+    const r = Math.floor(254 - (step.value * 30));
+    const g = Math.floor(226 - (step.value * 160));
+    const b = Math.floor(226 - (step.value * 160));
+    const bgColor = `rgba(${r}, ${g}, ${b}, ${Math.max(0.4, 0.3 + step.value * 0.5)})`;
+    
+    html += `
+      <div class="calendar-legend-item">
+        <div class="calendar-legend-color" style="background: ${bgColor};"></div>
+        <span>${step.label}</span>
+      </div>
+    `;
+  });
+  
+  html += '</div>';
+  
+  container.innerHTML = html;
+  
+  // Add tooltip functionality
+  const existingTooltips = document.querySelectorAll('.calendar-tooltip');
+  existingTooltips.forEach(tt => tt.remove());
+  
+  container.querySelectorAll('.calendar-day:not(.empty)').forEach(day => {
+    const tooltip = document.createElement('div');
+    tooltip.className = 'calendar-tooltip';
+    tooltip.textContent = day.dataset.tooltip;
+    document.body.appendChild(tooltip);
+    
+    day.addEventListener('mouseenter', () => {
+      const rect = day.getBoundingClientRect();
+      const tooltipRect = tooltip.getBoundingClientRect();
+      let left = rect.left + (rect.width / 2) - (tooltipRect.width / 2);
+      let top = rect.top - tooltipRect.height - 8;
+      
+      // Keep tooltip within viewport
+      if (left < 10) left = 10;
+      if (left + tooltipRect.width > window.innerWidth - 10) {
+        left = window.innerWidth - tooltipRect.width - 10;
+      }
+      if (top < 10) {
+        top = rect.bottom + 8;
+      }
+      
+      tooltip.style.left = left + 'px';
+      tooltip.style.top = top + 'px';
+      tooltip.classList.add('show');
+    });
+    
+    day.addEventListener('mouseleave', () => {
+      tooltip.classList.remove('show');
+    });
+  });
+}
+
+/* ---------- CENTRAL RENDER ---------- */
+
+function updateCurrentDate() {
+  const dateDisplay = document.getElementById('currentDateDisplay');
+  if (dateDisplay) {
+    const now = new Date();
+    const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+    dateDisplay.textContent = now.toLocaleDateString('en-US', options);
+  }
+}
+
+function renderAll() {
+  updateCurrentDate(); // Update current date in header
+  renderProfileSelector();
+  updateMonthYearSelectors();
+  renderCategoryFilters();
+  renderKpis();
+  renderTransactionsTable();
+  renderGoals();
+  renderCategoryChart();
+  renderMonthlyChart();
+  renderSankeyChart();
+  renderCalendarHeatmap();
+  renderRecurringTransactions();
+  renderDebts();
+  renderFinancialGoals();
+  renderBillReminders();
+  renderReports();
+  renderInsights();
+}
+
+/* ---------- SETTINGS PANEL ---------- */
+
+let editingCategoryId = null;
+let settings = {
+  budgetAlertsEnabled: true,
+  budgetAlertThreshold: 80,
+  currencySymbol: '$',
+  dateFormat: 'YYYY-MM-DD'
+};
+
+function loadSettings() {
+  const saved = localStorage.getItem('budgetDashboardSettings');
+  if (saved) {
+    settings = { ...settings, ...JSON.parse(saved) };
+  }
+  applySettings();
+}
+
+function saveSettings() {
+  localStorage.setItem('budgetDashboardSettings', JSON.stringify(settings));
+  applySettings();
+}
+
+function applySettings() {
+  // Update UI elements
+  if (document.getElementById('budgetAlertsEnabled')) {
+    document.getElementById('budgetAlertsEnabled').checked = settings.budgetAlertsEnabled;
+  }
+  if (document.getElementById('budgetAlertThreshold')) {
+    document.getElementById('budgetAlertThreshold').value = settings.budgetAlertThreshold;
+  }
+  if (document.getElementById('currencySymbol')) {
+    document.getElementById('currencySymbol').value = settings.currencySymbol;
+  }
+  if (document.getElementById('dateFormat')) {
+    document.getElementById('dateFormat').value = settings.dateFormat;
+  }
+}
+
+function openSettings() {
+  const modal = document.getElementById('settingsModal');
+  if (!modal) return;
+  modal.classList.add('show');
+  renderCategoriesList();
+  applySettings();
+  
+  // Set current theme in dropdown
+  const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+  const themeSelect = document.getElementById('themeSelect');
+  if (themeSelect) {
+    themeSelect.value = currentTheme;
+  }
+}
+
+function closeSettings() {
+  const modal = document.getElementById('settingsModal');
+  if (modal) {
+    modal.classList.remove('show');
+  }
+}
+
+function renderCategoriesList() {
+  const container = document.getElementById('categoriesList');
+  const categories = getActiveData().categories;
+  
+  container.innerHTML = categories.map(cat => {
+    const budget = cat.monthlyBudget || 0;
+    return `
+      <div class="category-item">
+        <div class="category-color" style="background: ${cat.color}"></div>
+        <div class="category-info">
+          <div class="category-name">${cat.name}</div>
+          <div class="category-budget">Budget: ${formatMoney(budget)}</div>
+        </div>
+        <button onclick="editCategory('${cat.id}')" class="btn-primary" style="padding:5px 10px; border:none; border-radius:4px; cursor:pointer;">Edit</button>
+      </div>
+    `;
+  }).join('');
+}
+
+function editCategory(categoryId) {
+  const categories = getActiveData().categories;
+  const cat = categories.find(c => c.id === categoryId);
+  if (!cat) return;
+  
+  editingCategoryId = categoryId;
+  document.getElementById('categoryModalTitle').textContent = 'Edit Category';
+  document.getElementById('categoryNameInput').value = cat.name;
+  document.getElementById('categoryColorInput').value = cat.color;
+  document.getElementById('categoryBudgetInput').value = cat.monthlyBudget || 0;
+  document.getElementById('deleteCategoryBtn').style.display = 'block';
+  document.getElementById('categoryModal').classList.add('show');
+}
+
+function openAddCategory() {
+  editingCategoryId = null;
+  document.getElementById('categoryModalTitle').textContent = 'Add Category';
+  document.getElementById('categoryNameInput').value = '';
+  document.getElementById('categoryColorInput').value = '#60a5fa';
+  document.getElementById('categoryBudgetInput').value = '';
+  document.getElementById('deleteCategoryBtn').style.display = 'none';
+  document.getElementById('categoryModal').classList.add('show');
+}
+
+async function saveCategory() {
+  const name = document.getElementById('categoryNameInput').value.trim();
+  const color = document.getElementById('categoryColorInput').value;
+  const budget = parseFloat(document.getElementById('categoryBudgetInput').value) || 0;
+  
+  if (!name) {
+    showToast('Category name is required', 'Error');
+    return;
+  }
+  
+  if (useSupabase && currentBudget && categoryService) {
+    // Use Supabase
+    try {
+      const categoryData = {
+        name,
+        color,
+        monthly_budget: budget
+      };
+      
+      if (editingCategoryId) {
+        // Update existing
+        const { error } = await categoryService.updateCategory(editingCategoryId, categoryData);
+        if (error) {
+          showToast(`Error: ${error.message}`, 'Error');
+          return;
+        }
+        showToast('Category updated');
+      } else {
+        // Create new
+        const { data: newCat, error } = await categoryService.createCategory(currentBudget.id, categoryData);
+        if (error) {
+          showToast(`Error: ${error.message}`, 'Error');
+          return;
+        }
+        showToast('Category added');
+      }
+      
+      // Reload data from Supabase
+      await loadDataFromSupabase();
+    } catch (error) {
+      console.error('Error saving category:', error);
+      showToast(`Error saving category: ${error.message}`, 'Error');
+      return;
+    }
+  } else {
+    // Use localStorage (fallback)
+    const categories = getActiveData().categories;
+    
+    if (editingCategoryId) {
+      // Edit existing
+      const cat = categories.find(c => c.id === editingCategoryId);
+      if (cat) {
+        cat.name = name;
+        cat.color = color;
+        cat.monthlyBudget = budget;
+      }
+    } else {
+      // Add new
+      const newId = name.toLowerCase().replace(/\s+/g, '_');
+      if (categories.find(c => c.id === newId)) {
+        showToast('Category with this name already exists', 'Error');
+        return;
+      }
+      categories.push({
+        id: newId,
+        name: name,
+        color: color,
+        monthlyBudget: budget
+      });
+    }
+    
+    saveState();
+  }
+  
+  renderAll();
+  renderCategoriesList();
+  closeCategoryModal();
+}
+
+async function deleteCategory() {
+  if (!editingCategoryId) return;
+  
+  const categories = getActiveData().categories;
+  if (categories.length <= 1) {
+    showToast('Cannot delete the last category', 'Error');
+    return;
+  }
+  
+  const categoryName = categories.find(c => c.id === editingCategoryId)?.name;
+  if (!confirm(`Delete category "${categoryName}"? This will move all transactions to "Other".`)) {
+    return;
+  }
+  
+  if (useSupabase && currentBudget && categoryService && transactionService) {
+    // Use Supabase
+    try {
+      // Find "other" category or first category
+      const { data: allCategories } = await categoryService.getCategories(currentBudget.id);
+      const otherCat = allCategories?.find(c => c.name.toLowerCase() === 'other') || allCategories?.[0];
+      
+      if (!otherCat) {
+        showToast('Cannot find replacement category', 'Error');
+        return;
+      }
+      
+      // Update transactions to use other category
+      const { data: transactions } = await transactionService.getTransactions(currentBudget.id);
+      if (transactions) {
+        const transactionsToUpdate = transactions.filter(t => t.category_id === editingCategoryId);
+        for (const tx of transactionsToUpdate) {
+          await transactionService.updateTransaction(tx.id, { category_id: otherCat.id });
+        }
+      }
+      
+      // Delete category
+      const { error } = await categoryService.deleteCategory(editingCategoryId);
+      if (error) {
+        showToast(`Error: ${error.message}`, 'Error');
+        return;
+      }
+      
+      showToast('Category deleted');
+      // Reload data from Supabase
+      await loadDataFromSupabase();
+    } catch (error) {
+      console.error('Error deleting category:', error);
+      showToast(`Error deleting category: ${error.message}`, 'Error');
+      return;
+    }
+  } else {
+    // Use localStorage (fallback)
+    const otherCat = categories.find(c => c.id === 'other') || categories[0];
+    const transactions = getActiveData().transactions;
+    
+    // Move transactions to "other"
+    transactions.forEach(t => {
+      if (t.categoryId === editingCategoryId) {
+        t.categoryId = otherCat.id;
+      }
+    });
+    
+    // Remove category
+    const index = categories.findIndex(c => c.id === editingCategoryId);
+    if (index > -1) {
+      categories.splice(index, 1);
+    }
+    
+    saveState();
+    showToast('Category deleted');
+  }
+  
+  renderAll();
+  renderCategoriesList();
+  closeCategoryModal();
+}
+
+function closeCategoryModal() {
+  document.getElementById('categoryModal').classList.remove('show');
+  editingCategoryId = null;
+}
+
+// Budget tracking with warnings
+function checkBudgetWarnings() {
+  if (!settings.budgetAlertsEnabled) return;
+  
+  const data = getActiveData();
+  const tx = getFilteredTransactions();
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  
+  data.categories.forEach(cat => {
+    if (!cat.monthlyBudget || cat.monthlyBudget === 0) return;
+    
+    const monthExpenses = tx
+      .filter(t => t.type === 'expense' && 
+                   t.categoryId === cat.id && 
+                   t.date.startsWith(currentMonth))
+      .reduce((sum, t) => sum + t.amount, 0);
+    
+    const percentage = (monthExpenses / cat.monthlyBudget) * 100;
+    
+    if (percentage >= settings.budgetAlertThreshold) {
+      const message = percentage >= 100 
+        ? `⚠️ Over budget: ${cat.name} (${formatMoney(monthExpenses)} / ${formatMoney(cat.monthlyBudget)})`
+        : `⚠️ Approaching budget: ${cat.name} (${percentage.toFixed(0)}%)`;
+      showToast(message, percentage >= 100 ? 'Warning' : 'Info');
+    }
+  });
+}
+
+// Export functions (basic implementations)
+function exportToPdf() {
+  showToast('PDF export coming soon! For now, use Export JSON and convert it.', 'Info');
+}
+
+function exportToExcel() {
+  const data = getActiveData();
+  const tx = getFilteredTransactions();
+  
+  // Create CSV content
+  let csv = 'Date,Description,Type,Category,Amount\n';
+  tx.forEach(t => {
+    const cat = data.categories.find(c => c.id === t.categoryId);
+    csv += `${t.date},"${t.description}",${t.type},${cat?.name || 'Other'},${t.amount}\n`;
+  });
+  
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `budget-export-${new Date().toISOString().split('T')[0]}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  
+  showToast('Exported to CSV (Excel-compatible)');
+}
+
+function backupAllData() {
+  const backup = {
+    state: state,
+    settings: settings,
+    timestamp: new Date().toISOString()
+  };
+  
+  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `budget-backup-${new Date().toISOString().split('T')[0]}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  
+  showToast('Backup created');
+}
+
+// Make functions global for onclick handlers
+window.editCategory = editCategory;
+
+/* ---------- Event Listeners ---------- */
+
+// Month/Year dropdowns
+const monthSelect = document.getElementById("monthSelect");
+const yearSelect = document.getElementById("yearSelect");
+if (monthSelect) {
+  monthSelect.addEventListener("change", handleMonthYearChange);
+}
+if (yearSelect) {
+  yearSelect.addEventListener("change", handleMonthYearChange);
+}
+
+const toggleAllMonthsBtn = document.getElementById("toggleAllMonthsBtn");
+if (toggleAllMonthsBtn) {
+  toggleAllMonthsBtn.addEventListener("click", toggleAllMonths);
+}
+
+// Add Transaction button (now in Transactions tab)
+const addTransactionBtn = document.getElementById("addTransactionBtn");
+if (addTransactionBtn) {
+  addTransactionBtn.addEventListener("click", openDrawerForAdd);
+}
+
+// Selection mode buttons
+const editModeBtn = document.getElementById("editModeBtn");
+if (editModeBtn) {
+  editModeBtn.addEventListener("click", handleEditMode);
+}
+
+const deleteModeBtn = document.getElementById("deleteModeBtn");
+if (deleteModeBtn) {
+  deleteModeBtn.addEventListener("click", handleDeleteMode);
+}
+
+const cancelSelectionBtn = document.getElementById("cancelSelectionBtn");
+if (cancelSelectionBtn) {
+  cancelSelectionBtn.addEventListener("click", handleCancelSelection);
+}
+
+// Selection actions
+const selectAllCheckbox = document.getElementById("selectAllCheckbox");
+if (selectAllCheckbox) {
+  selectAllCheckbox.addEventListener("change", handleSelectAll);
+}
+
+const editSelectedBtn = document.getElementById("editSelectedBtn");
+if (editSelectedBtn) {
+  editSelectedBtn.addEventListener("click", handleEditSelected);
+}
+
+const deleteSelectedBtn = document.getElementById("deleteSelectedBtn");
+if (deleteSelectedBtn) {
+  deleteSelectedBtn.addEventListener("click", handleDeleteSelected);
+}
+const drawerCancelBtn = document.getElementById("drawerCancelBtn");
+if (drawerCancelBtn) {
+  drawerCancelBtn.addEventListener("click", closeDrawer);
+}
+const drawerSaveBtn = document.getElementById("drawerSaveBtn");
+if (drawerSaveBtn) {
+  drawerSaveBtn.addEventListener("click", saveTransactionFromDrawer);
+}
+
+const importJsonBtn = document.getElementById("importJsonBtn");
+if (importJsonBtn) {
+  importJsonBtn.addEventListener("click", importJson);
+}
+const exportJsonBtn = document.getElementById("exportJsonBtn");
+if (exportJsonBtn) {
+  exportJsonBtn.addEventListener("click", exportJson);
+}
+const importCsvBtn = document.getElementById("importCsvBtn");
+if (importCsvBtn) {
+  importCsvBtn.addEventListener("click", importCsv);
+}
+const undoImportBtn = document.getElementById("undoImportBtn");
+if (undoImportBtn) {
+  undoImportBtn.addEventListener("click", undoImport);
+}
+
+const clearDataBtn = document.getElementById("clearDataBtn");
+if (clearDataBtn) {
+  clearDataBtn.addEventListener("click", clearData);
+}
+
+const connectBankBtn = document.getElementById("connectBankBtn");
+if (connectBankBtn) {
+  connectBankBtn.addEventListener("click", connectBank);
+}
+
+const addGoalBtn = document.getElementById("addGoalBtn");
+if (addGoalBtn) {
+  addGoalBtn.addEventListener("click", addGoal);
+}
+
+const createProfileBtn = document.getElementById("createProfileBtn");
+if (createProfileBtn) {
+  createProfileBtn.addEventListener("click", () => {
+    const name = prompt("Profile name:");
+    if (name) {
+      createNewProfile(name);
+      closeProfileMenu();
+    }
+  });
+}
+
+const searchBox = document.getElementById("searchBox");
+if (searchBox) {
+  searchBox.addEventListener("input", renderAll);
+}
+const filterType = document.getElementById("filterType");
+if (filterType) {
+  filterType.addEventListener("change", renderAll);
+}
+const filterCategory = document.getElementById("filterCategory");
+if (filterCategory) {
+  filterCategory.addEventListener("change", renderAll);
+}
+
+// Table sorting - wait for DOM to be ready
+setTimeout(() => {
+  document.querySelectorAll('.sortable').forEach(header => {
+    header.addEventListener('click', () => {
+      const column = header.getAttribute('data-sort');
+      sortTable(column);
+    });
+  });
+  // Initialize sort indicators
+  updateSortIndicators();
+}, 100);
+
+// Profile Menu
+const profileMenuBtn = document.getElementById("profileMenuBtn");
+const profileMenu = document.querySelector(".profile-menu");
+
+if (profileMenuBtn && profileMenu) {
+  profileMenuBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    profileMenu.classList.toggle("active");
+  });
+
+  // Close menu when clicking outside
+  document.addEventListener("click", (e) => {
+    if (profileMenu && !profileMenu.contains(e.target)) {
+      profileMenu.classList.remove("active");
+    }
+  });
+
+  // Close menu when clicking a menu item
+  document.querySelectorAll(".profile-dropdown .menu-item").forEach(item => {
+    item.addEventListener("click", () => {
+      profileMenu.classList.remove("active");
+    });
+  });
+}
+
+// Settings panel
+const settingsBtn = document.getElementById("settingsBtn");
+if (settingsBtn) {
+  settingsBtn.addEventListener("click", openSettings);
+}
+const closeSettingsBtn = document.getElementById("closeSettingsBtn");
+if (closeSettingsBtn) {
+  closeSettingsBtn.addEventListener("click", closeSettings);
+}
+const addCategoryBtn = document.getElementById("addCategoryBtn");
+if (addCategoryBtn) {
+  addCategoryBtn.addEventListener("click", openAddCategory);
+}
+const saveCategoryBtn = document.getElementById("saveCategoryBtn");
+if (saveCategoryBtn) {
+  saveCategoryBtn.addEventListener("click", saveCategory);
+}
+const cancelCategoryBtn = document.getElementById("cancelCategoryBtn");
+if (cancelCategoryBtn) {
+  cancelCategoryBtn.addEventListener("click", closeCategoryModal);
+}
+const deleteCategoryBtn = document.getElementById("deleteCategoryBtn");
+if (deleteCategoryBtn) {
+  deleteCategoryBtn.addEventListener("click", deleteCategory);
+}
+
+// Settings controls
+const budgetAlertsEnabled = document.getElementById("budgetAlertsEnabled");
+if (budgetAlertsEnabled) {
+  budgetAlertsEnabled.addEventListener("change", e => {
+    settings.budgetAlertsEnabled = e.target.checked;
+    saveSettings();
+  });
+}
+const budgetAlertThreshold = document.getElementById("budgetAlertThreshold");
+if (budgetAlertThreshold) {
+  budgetAlertThreshold.addEventListener("change", e => {
+    settings.budgetAlertThreshold = parseInt(e.target.value) || 80;
+    saveSettings();
+  });
+}
+const currencySymbol = document.getElementById("currencySymbol");
+if (currencySymbol) {
+  currencySymbol.addEventListener("change", e => {
+    settings.currencySymbol = e.target.value || '$';
+    saveSettings();
+    renderAll();
+  });
+}
+const dateFormat = document.getElementById("dateFormat");
+if (dateFormat) {
+  dateFormat.addEventListener("change", e => {
+    settings.dateFormat = e.target.value;
+    saveSettings();
+    renderAll(); // Re-render to apply new date format
+  });
+}
+
+// Export buttons
+const exportPdfBtn = document.getElementById("exportPdfBtn");
+if (exportPdfBtn) {
+  exportPdfBtn.addEventListener("click", exportToPdf);
+}
+const exportExcelBtn = document.getElementById("exportExcelBtn");
+if (exportExcelBtn) {
+  exportExcelBtn.addEventListener("click", exportToExcel);
+}
+const backupDataBtn = document.getElementById("backupDataBtn");
+if (backupDataBtn) {
+  backupDataBtn.addEventListener("click", backupAllData);
+}
+
+// Theme toggle in settings
+const themeSelect = document.getElementById("themeSelect");
+if (themeSelect) {
+  themeSelect.addEventListener("change", toggleTheme);
+}
+
+// Recurring transactions
+const addRecurringBtn = document.getElementById("addRecurringBtn");
+if (addRecurringBtn) {
+  addRecurringBtn.addEventListener("click", addRecurring);
+}
+const saveRecurringBtn = document.getElementById("saveRecurringBtn");
+if (saveRecurringBtn) {
+  saveRecurringBtn.addEventListener("click", saveRecurring);
+}
+const cancelRecurringBtn = document.getElementById("cancelRecurringBtn");
+if (cancelRecurringBtn) {
+  cancelRecurringBtn.addEventListener("click", closeRecurringModal);
+}
+const deleteRecurringBtn = document.getElementById("deleteRecurringBtn");
+if (deleteRecurringBtn) {
+  deleteRecurringBtn.addEventListener("click", () => {
+    if (editingRecurringId) deleteRecurring(editingRecurringId);
+  });
+}
+
+// Debt tracking
+const addDebtBtn = document.getElementById("addDebtBtn");
+if (addDebtBtn) {
+  addDebtBtn.addEventListener("click", addDebt);
+}
+const saveDebtBtn = document.getElementById("saveDebtBtn");
+if (saveDebtBtn) {
+  saveDebtBtn.addEventListener("click", saveDebt);
+}
+const cancelDebtBtn = document.getElementById("cancelDebtBtn");
+if (cancelDebtBtn) {
+  cancelDebtBtn.addEventListener("click", closeDebtModal);
+}
+const deleteDebtBtn = document.getElementById("deleteDebtBtn");
+if (deleteDebtBtn) {
+  deleteDebtBtn.addEventListener("click", () => {
+    if (editingDebtId) deleteDebt(editingDebtId);
+  });
+}
+
+// Financial goals
+const addFinancialGoalBtn = document.getElementById("addFinancialGoalBtn");
+if (addFinancialGoalBtn) {
+  addFinancialGoalBtn.addEventListener("click", addFinancialGoal);
+}
+const saveFinancialGoalBtn = document.getElementById("saveFinancialGoalBtn");
+if (saveFinancialGoalBtn) {
+  saveFinancialGoalBtn.addEventListener("click", saveFinancialGoal);
+}
+const cancelFinancialGoalBtn = document.getElementById("cancelFinancialGoalBtn");
+if (cancelFinancialGoalBtn) {
+  cancelFinancialGoalBtn.addEventListener("click", closeFinancialGoalModal);
+}
+const deleteFinancialGoalBtn = document.getElementById("deleteFinancialGoalBtn");
+if (deleteFinancialGoalBtn) {
+  deleteFinancialGoalBtn.addEventListener("click", () => {
+    if (editingFinancialGoalId) deleteFinancialGoal(editingFinancialGoalId);
+  });
+}
+
+// Close modals when clicking outside
+document.querySelectorAll('.modal').forEach(modal => {
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      modal.classList.remove('show');
+    }
+  });
+});
+
+/* ---------- TAB NAVIGATION ---------- */
+function initTabs() {
+  const tabButtons = document.querySelectorAll('.tab-btn');
+  const tabPanes = document.querySelectorAll('.tab-pane');
+  
+  tabButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetTab = btn.dataset.tab;
+      
+      // Remove active class from all buttons and panes
+      tabButtons.forEach(b => b.classList.remove('active'));
+      tabPanes.forEach(p => p.classList.remove('active'));
+      
+      // Add active class to clicked button and corresponding pane
+      btn.classList.add('active');
+      const targetPane = document.getElementById(`tab-${targetTab}`);
+      if (targetPane) {
+        targetPane.classList.add('active');
+      }
+      
+      // Save to localStorage
+      localStorage.setItem('budgetDashboardActiveTab', targetTab);
+      
+      // Scroll tabs nav if needed (for mobile)
+      btn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    });
+  });
+  
+  // Set initial active tab from localStorage or default to overview
+  const savedTab = localStorage.getItem('budgetDashboardActiveTab') || 'overview';
+  const savedBtn = document.querySelector(`.tab-btn[data-tab="${savedTab}"]`);
+  if (savedBtn) {
+    // Manually trigger the tab switch without clicking
+    const targetTab = savedBtn.dataset.tab;
+    tabButtons.forEach(b => b.classList.remove('active'));
+    tabPanes.forEach(p => p.classList.remove('active'));
+    savedBtn.classList.add('active');
+    const targetPane = document.getElementById(`tab-${targetTab}`);
+    if (targetPane) {
+      targetPane.classList.add('active');
+    }
+  }
+}
+
+// Save active tab to localStorage when switching (integrated into initTabs)
+
+/* ---------- Initial Render ---------- */
+
+// Initialize app with Supabase or localStorage
+(async function initApp() {
+  // Try to initialize Supabase first
+  const supabaseActive = await initSupabaseIntegration();
+  
+  if (!supabaseActive) {
+    // Fallback to localStorage mode
+    console.log('Using localStorage mode');
+    loadState();
+  } else {
+    // Supabase is active - data will be loaded by initSupabaseIntegration
+    // Don't load from localStorage as it will overwrite Supabase data
+    console.log('Using Supabase mode - data loaded from cloud');
+  }
+  
+  // Initialize UI
+  loadSettings();
+  initTheme();
+  initTabs();
+  
+  // Initialize toggle button text
+  const toggleAllBtn = document.getElementById("toggleAllMonthsBtn");
+  if (toggleAllBtn) {
+    toggleAllBtn.textContent = showAllMonths ? "All Months ✓" : "All Months";
+  }
+  
+  // Initialize month/year selectors
+  updateMonthYearSelectors();
+  
+  // Setup budget management handlers (if Supabase is active)
+  if (useSupabase) {
+    setupBudgetManagement();
+    // Setup real-time subscriptions if we have a budget
+    if (currentBudget) {
+      setupRealtimeSubscriptions();
+    }
+  }
+  
+  // Render the UI after data is loaded
+  renderAll();
+  
+  // Handle window resize for transaction layout (table vs cards)
+  let transactionLayoutTimeout;
+  window.addEventListener('resize', () => {
+    clearTimeout(transactionLayoutTimeout);
+    transactionLayoutTimeout = setTimeout(() => {
+      renderTransactionsTable();
+    }, 250);
+  });
+  
+  renderAll();
+  
+  // Check budget warnings after a short delay
+  setTimeout(checkBudgetWarnings, 1000);
+})();
+
+// Budget Management Setup (Supabase only)
+async function setupBudgetManagement() {
+  // Budget selector
+  const budgetSelect = document.getElementById('budgetSelect');
+  if (budgetSelect) {
+    budgetSelect.addEventListener('change', async (e) => {
+      e.stopPropagation(); // Don't close dropdown on change
+      const integration = await import('./supabase-integration.js');
+      await integration.switchBudget(e.target.value);
+    });
+  }
+  
+  // Create budget button
+  const createBudgetBtn = document.getElementById('createBudgetBtn');
+  if (createBudgetBtn) {
+    createBudgetBtn.style.display = 'block';
+    createBudgetBtn.addEventListener('click', () => {
+      document.getElementById('budgetModal').classList.add('show');
+      document.getElementById('budgetNameInput').value = '';
+      document.getElementById('budgetTypeInput').value = 'personal';
+      // Close the profile dropdown after opening modal
+      const profileMenu = document.querySelector('.profile-menu');
+      if (profileMenu) profileMenu.classList.remove('active');
+    });
+  }
+  
+  // Save budget
+  const saveBudgetBtn = document.getElementById('saveBudgetBtn');
+  if (saveBudgetBtn) {
+    saveBudgetBtn.addEventListener('click', async () => {
+      const name = document.getElementById('budgetNameInput').value.trim();
+      const type = document.getElementById('budgetTypeInput').value;
+      
+      if (!name) {
+        showToast('Please enter a budget name', 'Error');
+        return;
+      }
+      
+      const integration = await import('./supabase-integration.js');
+      await integration.createBudget(name, type);
+      document.getElementById('budgetModal').classList.remove('show');
+    });
+  }
+  
+  // Cancel budget creation
+  const cancelBudgetBtn = document.getElementById('cancelBudgetBtn');
+  if (cancelBudgetBtn) {
+    cancelBudgetBtn.addEventListener('click', () => {
+      document.getElementById('budgetModal').classList.remove('show');
+    });
+  }
+  
+  // Logout
+  const logoutBtn = document.getElementById('logoutBtn');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', async () => {
+      if (confirm('Are you sure you want to sign out?')) {
+        const integration = await import('./supabase-integration.js');
+        await integration.logout();
+      }
+    });
+  }
+  
+  // Show budget management buttons
+  const manageBudgetsBtn = document.getElementById('manageBudgetsBtn');
+  const joinBudgetBtn = document.getElementById('joinBudgetBtn');
+  const budgetDivider = document.getElementById('budgetDivider');
+  
+  if (manageBudgetsBtn) manageBudgetsBtn.style.display = 'block';
+  if (joinBudgetBtn) joinBudgetBtn.style.display = 'block';
+  if (budgetDivider) budgetDivider.style.display = 'block';
+  
+  // Hide old profile creation (replaced by budgets)
+  const createProfileBtn = document.getElementById('createProfileBtn');
+  if (createProfileBtn) createProfileBtn.style.display = 'none';
+  
+  // Budget Settings Modal - Open from budget selector (reuse existing budgetSelect)
+  if (budgetSelect) {
+    // Double-click or right-click to open settings (for shared budgets)
+    budgetSelect.addEventListener('dblclick', async () => {
+      if (currentBudget && currentBudget.type === 'shared') {
+        await openBudgetSettings();
+      }
+    });
+  }
+  
+  // Manage Budgets Button
+  if (manageBudgetsBtn) {
+    manageBudgetsBtn.addEventListener('click', async () => {
+      await openManageBudgets();
+    });
+  }
+  
+  // Close Manage Budgets Modal
+  const closeManageBudgetsBtn = document.getElementById('closeManageBudgetsBtn');
+  if (closeManageBudgetsBtn) {
+    closeManageBudgetsBtn.addEventListener('click', () => {
+      document.getElementById('manageBudgetsModal').classList.remove('show');
+    });
+  }
+  
+  // Budget Settings Modal handlers
+  const closeBudgetSettingsBtn = document.getElementById('closeBudgetSettingsBtn');
+  if (closeBudgetSettingsBtn) {
+    closeBudgetSettingsBtn.addEventListener('click', () => {
+      document.getElementById('budgetSettingsModal').classList.remove('show');
+    });
+  }
+  
+  // Delete Budget Button
+  const deleteBudgetBtn = document.getElementById('deleteBudgetBtn');
+  if (deleteBudgetBtn) {
+    deleteBudgetBtn.addEventListener('click', async () => {
+      if (confirm('Are you sure you want to delete this budget? This action cannot be undone and will delete all transactions, categories, and goals.')) {
+        await deleteCurrentBudget();
+      }
+    });
+  }
+  
+  // Generate Invite Code
+  const generateInviteBtn = document.getElementById('generateInviteBtn');
+  if (generateInviteBtn) {
+    generateInviteBtn.addEventListener('click', async () => {
+      await generateInviteCode();
+    });
+  }
+  
+  // Join Budget Button - Header button opens modal
+  if (joinBudgetBtn) {
+    joinBudgetBtn.addEventListener('click', async () => {
+      document.getElementById('joinBudgetModal').classList.add('show');
+    });
+  }
+  
+  // Join Budget Submit Button - Modal button submits
+  const joinBudgetSubmitBtn = document.getElementById('joinBudgetSubmitBtn');
+  if (joinBudgetSubmitBtn) {
+    joinBudgetSubmitBtn.addEventListener('click', async () => {
+      await joinBudgetWithCode();
+    });
+  }
+  
+  const cancelJoinBudgetBtn = document.getElementById('cancelJoinBudgetBtn');
+  if (cancelJoinBudgetBtn) {
+    cancelJoinBudgetBtn.addEventListener('click', () => {
+      document.getElementById('joinBudgetModal').classList.remove('show');
+    });
+  }
+}
+
+// Admin Functions
+async function openBudgetSettings() {
+  if (!currentBudget || !useSupabase) return;
+  
+  const modal = document.getElementById('budgetSettingsModal');
+  if (!modal) return;
+  
+  document.getElementById('budgetSettingsTitle').textContent = `${currentBudget.name} Settings`;
+  
+  // Load members
+  await loadBudgetMembers();
+  
+  // Show invite section for shared budgets
+  const inviteSection = document.getElementById('budgetInviteSection');
+  const dangerSection = document.getElementById('budgetDangerSection');
+  
+  if (currentBudget.type === 'shared') {
+    if (inviteSection) inviteSection.style.display = 'block';
+    // Only show danger zone if user is owner
+    if (currentBudget.owner_id === currentUser.id && dangerSection) {
+      dangerSection.style.display = 'block';
+    } else if (dangerSection) {
+      dangerSection.style.display = 'none';
+    }
+    await loadInviteCode();
+  } else {
+    if (inviteSection) inviteSection.style.display = 'none';
+    if (dangerSection) dangerSection.style.display = 'none';
+  }
+  
+  modal.classList.add('show');
+}
+
+async function loadBudgetMembers() {
+  if (!currentBudget || !useSupabase) return;
+  
+  const membersList = document.getElementById('budgetMembersList');
+  if (!membersList) return;
+  
+  try {
+    const services = await import('./supabase-browser.js');
+    const { budgetService } = services;
+    
+    const { data: members, error } = await budgetService.getBudgetMembers(currentBudget.id);
+    if (error) {
+      showToast(`Error loading members: ${error.message}`, 'Error');
+      return;
+    }
+    
+    membersList.innerHTML = '';
+    
+    if (!members || members.length === 0) {
+      membersList.innerHTML = '<p>No members found</p>';
+      return;
+    }
+    
+    members.forEach(member => {
+      const memberDiv = document.createElement('div');
+      memberDiv.className = 'budget-member-item';
+      memberDiv.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 12px; background: var(--bg-tertiary); border-radius: 6px; margin-bottom: 8px;';
+      
+      const user = member.user || {};
+      const userName = user.display_name || user.username || user.email || 'Unknown';
+      const isOwner = member.role === 'owner';
+      const isCurrentUser = member.user_id === currentUser.id;
+      const canRemove = currentBudget.owner_id === currentUser.id && !isOwner && !isCurrentUser;
+      
+      memberDiv.innerHTML = `
+        <div>
+          <strong>${userName}</strong>
+          <span style="margin-left: 8px; font-size: 12px; color: var(--text-secondary);">(${member.role})</span>
+          ${isCurrentUser ? '<span style="margin-left: 8px; font-size: 11px; color: var(--accent);">(You)</span>' : ''}
+        </div>
+        ${canRemove ? `<button class="btn-danger" style="padding: 6px 12px; font-size: 12px;" data-member-id="${member.user_id}">Remove</button>` : ''}
+      `;
+      
+      if (canRemove) {
+        const removeBtn = memberDiv.querySelector('button');
+        removeBtn.addEventListener('click', async () => {
+          if (confirm(`Remove ${userName} from this budget?`)) {
+            await removeBudgetMember(member.user_id);
+          }
+        });
+      }
+      
+      membersList.appendChild(memberDiv);
+    });
+  } catch (error) {
+    console.error('Error loading members:', error);
+    showToast('Error loading members', 'Error');
+  }
+}
+
+async function removeBudgetMember(userId) {
+  if (!currentBudget || !useSupabase) return;
+  
+  try {
+    const services = await import('./supabase-browser.js');
+    const { budgetService } = services;
+    
+    const { error } = await budgetService.removeMember(currentBudget.id, userId);
+    if (error) {
+      console.error('Error removing member:', error);
+      showToast(`Error removing member: ${error.message || error.code || 'Unknown error'}`, 'Error');
+      return;
+    }
+    
+    // Reload members to verify deletion
+    await loadBudgetMembers();
+    
+    // Double-check the member was actually removed
+    const { data: members } = await budgetService.getBudgetMembers(currentBudget.id);
+    const stillMember = members?.some(m => m.user_id === userId);
+    
+    if (stillMember) {
+      showToast('Failed to remove member. You may not have permission.', 'Error');
+      console.error('Member still exists after delete attempt');
+    } else {
+      showToast('Member removed', 'Success');
+    }
+    
+    // Reload budgets if current user was removed
+    if (userId === currentUser.id) {
+      const integration = await import('./supabase-integration.js');
+      await integration.loadUserData();
+    }
+  } catch (error) {
+    console.error('Error removing member:', error);
+    showToast(`Error removing member: ${error.message || 'Unknown error'}`, 'Error');
+  }
+}
+
+async function deleteCurrentBudget() {
+  if (!currentBudget || !useSupabase || currentBudget.owner_id !== currentUser.id) {
+    showToast('Only budget owners can delete budgets', 'Error');
+    return;
+  }
+  
+  try {
+    const services = await import('./supabase-browser.js');
+    const { budgetService } = services;
+    
+    const { error } = await budgetService.deleteBudget(currentBudget.id);
+    if (error) {
+      showToast(`Error: ${error.message}`, 'Error');
+      return;
+    }
+    
+    showToast('Budget deleted', 'Success');
+    document.getElementById('budgetSettingsModal').classList.remove('show');
+    
+    // Reload budgets
+    const integration = await import('./supabase-integration.js');
+    await integration.loadUserData();
+  } catch (error) {
+    console.error('Error deleting budget:', error);
+    showToast('Error deleting budget', 'Error');
+  }
+}
+
+async function loadInviteCode() {
+  if (!currentBudget || currentBudget.type !== 'shared') return;
+  
+  const inviteCodeText = document.getElementById('inviteCodeText');
+  if (!inviteCodeText) return;
+  
+  try {
+    const services = await import('./supabase-browser.js');
+    const { inviteService } = services;
+    
+    const { data: invites, error } = await inviteService.getBudgetInvites(currentBudget.id);
+    if (error) {
+      inviteCodeText.textContent = 'Error loading invite';
+      return;
+    }
+    
+    // Find active invite (not used, not expired)
+    const activeInvite = invites?.find(inv => !inv.used_at && new Date(inv.expires_at) > new Date());
+    
+    if (activeInvite) {
+      inviteCodeText.textContent = activeInvite.invite_code;
+    } else {
+      inviteCodeText.textContent = 'No active invite';
+    }
+  } catch (error) {
+    console.error('Error loading invite:', error);
+    inviteCodeText.textContent = 'Error';
+  }
+}
+
+async function generateInviteCode() {
+  if (!currentBudget || !useSupabase || currentBudget.owner_id !== currentUser.id) {
+    showToast('Only budget owners can generate invite codes', 'Error');
+    return;
+  }
+  
+  try {
+    const services = await import('./supabase-browser.js');
+    const { inviteService } = services;
+    
+    const { data, error } = await inviteService.createInvite(currentBudget.id, currentUser.id, 7);
+    if (error) {
+      showToast(`Error: ${error.message}`, 'Error');
+      return;
+    }
+    
+    showToast('Invite code generated', 'Success');
+    await loadInviteCode();
+  } catch (error) {
+    console.error('Error generating invite:', error);
+    showToast('Error generating invite', 'Error');
+  }
+}
+
+async function joinBudgetWithCode() {
+  const codeInput = document.getElementById('inviteCodeInput');
+  if (!codeInput) return;
+  
+  const code = codeInput.value.trim().toUpperCase();
+  if (!code || code.length !== 8) {
+    showToast('Please enter a valid 8-character invite code', 'Error');
+    return;
+  }
+  
+  if (!useSupabase || !currentUser) {
+    showToast('Please sign in to join a budget', 'Error');
+    return;
+  }
+  
+  try {
+    const services = await import('./supabase-browser.js');
+    const { inviteService, budgetService } = services;
+    
+    // Get invite
+    const { data: invite, error: inviteError } = await inviteService.getInvite(code);
+    if (inviteError || !invite) {
+      showToast('Invalid or expired invite code', 'Error');
+      return;
+    }
+    
+    // Check if user is already a member
+    const { data: existingMembers, error: checkError } = await budgetService.getBudgetMembers(invite.budget_id);
+    const isAlreadyMember = existingMembers?.some(m => m.user_id === currentUser.id);
+    
+    if (isAlreadyMember) {
+      showToast('You are already a member of this budget', 'Info');
+      document.getElementById('joinBudgetModal').classList.remove('show');
+      codeInput.value = '';
+      // Reload budgets
+      const integration = await import('./supabase-integration.js');
+      await integration.loadUserData();
+      return;
+    }
+    
+    // Add user as member
+    const { error: memberError } = await budgetService.addMember(invite.budget_id, currentUser.id, 'member');
+    if (memberError) {
+      // Handle 409 Conflict (already a member) gracefully
+      if (memberError.code === '23505' || memberError.message?.includes('duplicate') || memberError.message?.includes('unique')) {
+        showToast('You are already a member of this budget', 'Info');
+        document.getElementById('joinBudgetModal').classList.remove('show');
+        codeInput.value = '';
+        // Reload budgets
+        const integration = await import('./supabase-integration.js');
+        await integration.loadUserData();
+        return;
+      }
+      showToast(`Error: ${memberError.message}`, 'Error');
+      return;
+    }
+    
+    // Mark invite as used
+    await inviteService.useInvite(code, currentUser.id);
+    
+    showToast('Successfully joined budget!', 'Success');
+    document.getElementById('joinBudgetModal').classList.remove('show');
+    codeInput.value = '';
+    
+    // Reload budgets
+    const integration = await import('./supabase-integration.js');
+    await integration.loadUserData();
+  } catch (error) {
+    console.error('Error joining budget:', error);
+    showToast('Error joining budget', 'Error');
+  }
+}
+
+async function openManageBudgets() {
+  const modal = document.getElementById('manageBudgetsModal');
+  if (!modal) return;
+  
+  // Load and display budgets
+  const budgetsList = document.getElementById('budgetsList');
+  if (budgetsList) {
+    try {
+      const integration = await import('./supabase-integration.js');
+      const { userBudgets } = integration;
+      
+      budgetsList.innerHTML = '';
+      
+      if (!userBudgets || userBudgets.length === 0) {
+        budgetsList.innerHTML = '<p>No budgets found</p>';
+      } else {
+        userBudgets.forEach(budget => {
+          const budgetDiv = document.createElement('div');
+          budgetDiv.style.cssText = 'padding: 12px; background: var(--bg-tertiary); border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;';
+          
+          const badge = budget.type === 'shared' ? '👥' : '👤';
+          const isOwner = budget.owner_id === currentUser.id;
+          
+          budgetDiv.innerHTML = `
+            <div>
+              <strong>${budget.name}</strong> ${badge}
+              <span style="margin-left: 8px; font-size: 12px; color: var(--text-secondary);">${budget.type}</span>
+              ${isOwner ? '<span style="margin-left: 8px; font-size: 11px; color: var(--accent);">(Owner)</span>' : ''}
+            </div>
+            ${budget.type === 'shared' ? `<button class="btn-secondary" style="padding: 6px 12px; font-size: 12px;" data-budget-id="${budget.id}">Settings</button>` : ''}
+          `;
+          
+          if (budget.type === 'shared') {
+            const settingsBtn = budgetDiv.querySelector('button');
+            settingsBtn.addEventListener('click', async () => {
+              await integration.switchBudget(budget.id);
+              await openBudgetSettings();
+              document.getElementById('manageBudgetsModal').classList.remove('show');
+            });
+          }
+          
+          budgetsList.appendChild(budgetDiv);
+        });
+      }
+    } catch (error) {
+      console.error('Error loading budgets:', error);
+      budgetsList.innerHTML = '<p>Error loading budgets</p>';
+    }
+  }
+  
+  modal.classList.add('show');
+}

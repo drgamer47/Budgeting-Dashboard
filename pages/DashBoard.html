@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Budget Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="stylesheet" href="styles/styles.css">
+</head>
+
+<body>
+
+<header>
+  <div class="header-left">
+    <h1>Budget Dashboard</h1>
+    <div id="currentDateDisplay" class="current-date"></div>
+  </div>
+
+  <div class="header-center">
+    <!-- Month Navigation -->
+    <div class="month-nav-container">
+      <div class="month-nav">
+        <select id="monthSelect" class="month-year-select">
+          <option value="01">January</option>
+          <option value="02">February</option>
+          <option value="03">March</option>
+          <option value="04">April</option>
+          <option value="05">May</option>
+          <option value="06">June</option>
+          <option value="07">July</option>
+          <option value="08">August</option>
+          <option value="09">September</option>
+          <option value="10">October</option>
+          <option value="11">November</option>
+          <option value="12">December</option>
+        </select>
+        <select id="yearSelect" class="month-year-select"></select>
+        <button id="toggleAllMonthsBtn" class="btn-all">All Months</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="header-right">
+    <!-- Profile Button - Top Right -->
+    <div class="profile-menu">
+      <button id="profileMenuBtn" class="profile-circle" title="Profile Menu">
+        <span id="profileInitial">U</span>
+      </button>
+      <div class="profile-dropdown" id="profileDropdown">
+        <div class="profile-header">
+          <div class="profile-info">
+            <div class="profile-name" id="currentProfileName">Default</div>
+            <div class="profile-subtitle" id="currentUserEmail">Current Profile</div>
+          </div>
+        </div>
+        <div class="menu-divider"></div>
+        <!-- Budget Selector -->
+        <div class="budget-selector-menu" id="budgetSelectorMenu" style="display: none;">
+          <select id="budgetSelect" class="budget-select" title="Select Budget">
+            <option value="">Loading budgets...</option>
+          </select>
+          <button id="createBudgetBtn" class="btn-secondary btn-compact" title="Create Budget" style="display: none;">+ Budget</button>
+        </div>
+        <div class="menu-divider" id="budgetSelectorDivider" style="display: none;"></div>
+        <button id="manageBudgetsBtn" class="menu-item" style="display: none;">
+          <span>📊</span> Manage Budgets
+        </button>
+        <button id="joinBudgetBtn" class="menu-item" style="display: none;">
+          <span>🔗</span> Join Budget
+        </button>
+        <div class="menu-divider" style="display: none;" id="budgetDivider"></div>
+        <div class="profile-list" id="profileList"></div>
+        <button id="createProfileBtn" class="menu-item" style="display: none;">
+          <span>➕</span> New Profile
+        </button>
+        <div class="menu-divider"></div>
+        <button id="connectBankBtn" class="menu-item">
+          <span>🏦</span> Connect Bank
+        </button>
+        <div class="menu-divider"></div>
+        <button id="importJsonBtn" class="menu-item">Import JSON</button>
+        <button id="exportJsonBtn" class="menu-item">Export JSON</button>
+        <button id="importCsvBtn" class="menu-item">Import CSV</button>
+        <button id="undoImportBtn" class="menu-item">Undo Import</button>
+        <div class="menu-divider"></div>
+        <button id="logoutBtn" class="menu-item menu-item-danger">
+          <span>🚪</span> Sign Out
+        </button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- Floating Settings Button -->
+<button id="settingsBtn" class="floating-settings-btn" title="Settings">⚙️</button>
+
+<div id="main">
+
+  <!-- TABS NAVIGATION -->
+  <div class="tabs-container">
+    <div class="tabs-nav" id="tabsNav">
+      <button class="tab-btn active" data-tab="overview">📊 Overview</button>
+      <button class="tab-btn" data-tab="transactions">💳 Transactions</button>
+      <button class="tab-btn" data-tab="goals">🎯 Goals & Planning</button>
+      <button class="tab-btn" data-tab="bills">📅 Bills & Recurring</button>
+      <button class="tab-btn" data-tab="reports">📈 Reports & Insights</button>
+    </div>
+  </div>
+
+  <!-- TAB CONTENT -->
+  <div class="tabs-content">
+    
+    <!-- OVERVIEW TAB -->
+    <div class="tab-pane active" id="tab-overview">
+      <!-- KPIs -->
+  <div class="kpi-row">
+        <div class="kpi-card">
+          <h2>Income</h2>
+          <div class="value" id="kpiIncome">$0</div>
+        </div>
+        <div class="kpi-card">
+          <h2>Expenses</h2>
+          <div class="value" id="kpiExpenses">$0</div>
+        </div>
+        <div class="kpi-card">
+          <h2>Net</h2>
+          <div class="value" id="kpiNet">$0</div>
+        </div>
+        <div class="kpi-card">
+          <h2>Total Savings</h2>
+          <div class="value" id="kpiSavings">$0</div>
+        </div>
+      </div>
+
+      <!-- SANKEY DIAGRAM -->
+      <div class="chart-box sankey-chart-container">
+        <h2 class="chart-title">Income Flow</h2>
+        <div id="sankeyChart" class="sankey-chart-wrapper"></div>
+      </div>
+
+      <!-- CALENDAR HEATMAP -->
+      <div class="chart-box" style="margin-bottom: 30px;">
+        <h2 style="margin-top:0; margin-bottom: 15px;">Net Income Calendar</h2>
+        <div id="calendarHeatmap"></div>
+  </div>
+
+      <!-- CHARTS -->
+  <div class="charts-row">
+        <div class="chart-box">
+          <canvas id="categoryChart"></canvas>
+        </div>
+        <div class="chart-box">
+          <canvas id="monthlyChart"></canvas>
+        </div>
+      </div>
+  </div>
+
+    <!-- TRANSACTIONS TAB -->
+    <div class="tab-pane" id="tab-transactions">
+      <!-- Transactions Section Heading -->
+      <h2 class="tab-section-heading">Transactions</h2>
+
+      <!-- Action Toolbar -->
+      <div class="transactions-toolbar">
+        <div class="toolbar-actions">
+          <button id="addTransactionBtn" class="btn-primary">+ Add Transaction</button>
+          <button id="editModeBtn" class="btn-secondary">Edit</button>
+          <button id="deleteModeBtn" class="btn-danger">Delete</button>
+          <button id="cancelSelectionBtn" class="btn-secondary" style="display: none;">Cancel</button>
+        </div>
+      </div>
+
+      <!-- Selection Actions Bar (for Delete mode only) -->
+      <div id="selectionActionsBar" class="selection-actions-bar" style="display: none;">
+        <span id="selectedCount" class="selection-count"></span>
+        <button id="deleteSelectedBtn" class="btn-danger btn-compact">Delete Selected</button>
+      </div>
+      
+      <!-- Edit Mode Indicator -->
+      <div id="editModeIndicator" style="display: none; margin-bottom: 15px; padding: 10px; background: var(--bg-tertiary); border-radius: 6px; align-items: center; gap: 10px;">
+        <span style="font-weight: 600; color: var(--text-primary);">Click on any transaction to edit it</span>
+      </div>
+
+      <!-- Search and Filters -->
+      <div class="filters-section">
+        <div class="filters-row">
+          <input type="text" id="searchBox" placeholder="Search description…" class="search-input">
+          <select id="filterType" class="filter-select">
+            <option value="">Type: All</option>
+            <option value="income">Income</option>
+            <option value="expense">Expense</option>
+          </select>
+          <select id="filterCategory" class="filter-select"></select>
+        </div>
+      </div>
+
+      <!-- Transactions Table Container -->
+      <div class="table-box">
+
+        <!-- Desktop Table -->
+        <div class="table-wrapper">
+    <table>
+            <thead>
+              <tr>
+                <th id="checkboxHeader" class="checkbox-cell" style="display: none;">
+                  <div class="transaction-checkbox-wrapper">
+                    <input type="checkbox" id="selectAllCheckbox" title="Select All">
+                    <label for="selectAllCheckbox" class="transaction-checkbox-label"></label>
+                  </div>
+                </th>
+                <th class="sortable" data-sort="date">
+                  Date <span class="sort-indicator"></span>
+                </th>
+                <th class="sortable" data-sort="description">
+                  Desc <span class="sort-indicator"></span>
+                </th>
+                <th class="sortable" data-sort="type">
+                  Type <span class="sort-indicator"></span>
+                </th>
+                <th class="sortable" data-sort="category">
+                  Cat <span class="sort-indicator"></span>
+                </th>
+                <th class="sortable" data-sort="amount">
+                  Amount <span class="sort-indicator"></span>
+                </th>
+              </tr>
+            </thead>
+      <tbody id="transactionsTableBody"></tbody>
+    </table>
+  </div>
+
+        <!-- Mobile Cards -->
+        <div id="transactionsCardsContainer" class="transactions-cards-container" style="display: none;"></div>
+      </div>
+    </div>
+
+    <!-- GOALS & PLANNING TAB -->
+    <div class="tab-pane" id="tab-goals">
+      <!-- SAVINGS GOALS -->
+  <div class="goals-box">
+        <h2 style="margin-top:0;">Savings Goals</h2>
+    <div id="goalsList"></div>
+    <button id="addGoalBtn">Add Goal</button>
+  </div>
+
+      <!-- FINANCIAL GOALS (Extended) -->
+      <div class="goals-box">
+        <h2 style="margin-top:0;">Financial Goals</h2>
+        <div id="financialGoalsList"></div>
+        <button id="addFinancialGoalBtn">Add Financial Goal</button>
+</div>
+
+      <!-- DEBT TRACKING -->
+      <div class="goals-box">
+        <h2 style="margin-top:0;">Debt Tracking</h2>
+        <div id="debtList"></div>
+        <button id="addDebtBtn">Add Debt</button>
+      </div>
+</div>
+
+    <!-- BILLS & RECURRING TAB -->
+    <div class="tab-pane" id="tab-bills">
+      <!-- BILL REMINDERS -->
+      <div class="goals-box">
+        <h2 style="margin-top:0;">Upcoming Bills</h2>
+        <div id="remindersList"></div>
+      </div>
+
+      <!-- RECURRING TRANSACTIONS -->
+      <div class="goals-box">
+        <h2 style="margin-top:0;">Recurring Transactions</h2>
+        <div id="recurringList"></div>
+        <button id="addRecurringBtn">Add Recurring Transaction</button>
+      </div>
+    </div>
+
+    <!-- REPORTS & INSIGHTS TAB -->
+    <div class="tab-pane" id="tab-reports">
+      <!-- SPENDING REPORTS & ANALYTICS -->
+      <div class="reports-panel">
+        <h2>Reports & Analytics</h2>
+        <div id="reportsContent"></div>
+      </div>
+
+      <!-- SPENDING INSIGHTS -->
+      <div class="reports-panel">
+        <h2>Spending Insights</h2>
+        <div id="insightsContent"></div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<!-- Drawer -->
+<div class="drawer" id="drawer">
+  <div class="drawer-content">
+    <h2 id="drawerTitle">Add Transaction</h2>
+
+    <div class="form-grid">
+      <!-- Date and Amount on same row -->
+      <div class="form-group form-group-half">
+        <label for="drawerDate">Date</label>
+        <input type="date" id="drawerDate">
+      </div>
+
+      <div class="form-group form-group-half">
+        <label for="drawerAmount">Amount</label>
+        <input type="number" id="drawerAmount" step="0.01" placeholder="0.00">
+      </div>
+
+      <!-- Description full width -->
+      <div class="form-group form-group-full">
+        <label for="drawerDesc">Description</label>
+        <input type="text" id="drawerDesc" placeholder="Enter transaction description">
+      </div>
+
+      <!-- Type and Category on same row -->
+      <div class="form-group form-group-half">
+        <label for="drawerType">Type</label>
+        <select id="drawerType">
+          <option value="expense">Expense</option>
+          <option value="income">Income</option>
+        </select>
+      </div>
+
+      <div class="form-group form-group-half">
+        <label for="drawerCategory">Category</label>
+        <select id="drawerCategory"></select>
+      </div>
+
+      <!-- Merchant/Place full width -->
+      <div class="form-group form-group-full">
+        <label for="drawerMerchant">Merchant/Place <span class="label-optional">(Optional)</span></label>
+        <input type="text" id="drawerMerchant" placeholder="Enter merchant or place name">
+      </div>
+
+      <!-- Note full width -->
+      <div class="form-group form-group-full">
+        <label for="drawerNote">Note <span class="label-optional">(Optional)</span></label>
+        <input type="text" id="drawerNote" placeholder="Add any additional notes">
+      </div>
+    </div>
+
+    <!-- Button Actions -->
+    <div class="drawer-actions">
+      <button id="drawerCancelBtn" class="btn-drawer-cancel">Cancel</button>
+      <button id="drawerSaveBtn" class="btn-drawer-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal" id="settingsModal">
+  <div class="modal-content settings-modal-content">
+    <div class="settings-header">
+      <h2>Settings</h2>
+      <button id="closeSettingsBtn" class="close-btn">✕</button>
+    </div>
+    
+    <div class="settings-content">
+      <!-- Theme Toggle -->
+      <div class="settings-section">
+        <h3>Appearance</h3>
+        <label class="checkbox-label">
+          <span>Theme:</span>
+          <select id="themeSelect" style="margin-left: 10px;">
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </label>
+      </div>
+      
+      <!-- Categories Section -->
+      <div class="settings-section">
+        <h3>Categories</h3>
+        <div id="categoriesList"></div>
+        <button id="addCategoryBtn" class="btn-secondary">+ Add Category</button>
+      </div>
+      
+      <!-- Budget Alerts -->
+      <div class="settings-section">
+        <h3>Budget Alerts</h3>
+        <label class="checkbox-label">
+          <input type="checkbox" id="budgetAlertsEnabled">
+          <span>Show warnings when approaching budget limits</span>
+        </label>
+        <label class="checkbox-label">
+          <input type="number" id="budgetAlertThreshold" value="80" min="0" max="100" style="width:60px; margin-left:10px;">
+          <span>Alert at % of budget</span>
+        </label>
+      </div>
+      
+      <!-- Currency & Formatting -->
+      <div class="settings-section">
+        <h3>Currency & Formatting</h3>
+        <label>Currency Symbol</label>
+        <input type="text" id="currencySymbol" value="$" maxlength="3" style="width:80px;">
+        <label>Date Format</label>
+        <select id="dateFormat">
+          <option value="YYYY-MM-DD">YYYY-MM-DD</option>
+          <option value="MM/DD/YYYY">MM/DD/YYYY</option>
+          <option value="DD/MM/YYYY">DD/MM/YYYY</option>
+        </select>
+      </div>
+      
+      <!-- Data Management -->
+      <div class="settings-section">
+        <h3>Data Management</h3>
+        <button id="exportPdfBtn" class="btn-secondary">Export to PDF</button>
+        <button id="exportExcelBtn" class="btn-secondary">Export to Excel</button>
+        <button id="backupDataBtn" class="btn-secondary">Backup All Data</button>
+        <div class="menu-divider" style="margin: 15px 0;"></div>
+        <button id="clearDataBtn" class="btn-danger">Clear All Data</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Category Edit Modal -->
+<div class="modal" id="categoryModal">
+  <div class="modal-content">
+    <h3 id="categoryModalTitle">Add Category</h3>
+    <label>Name</label>
+    <input type="text" id="categoryNameInput" placeholder="Category name">
+    <label>Color</label>
+    <input type="color" id="categoryColorInput" value="#60a5fa">
+    <label>Monthly Budget</label>
+    <input type="number" id="categoryBudgetInput" step="0.01" min="0" placeholder="0">
+    <div class="modal-actions">
+      <button id="saveCategoryBtn" class="btn-primary">Save</button>
+      <button id="cancelCategoryBtn" class="btn-secondary">Cancel</button>
+      <button id="deleteCategoryBtn" class="btn-danger" style="display:none;">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Recurring Transaction Modal -->
+<div class="modal" id="recurringModal">
+  <div class="modal-content">
+    <h3 id="recurringModalTitle">Add Recurring Transaction</h3>
+    <label>Description</label>
+    <input type="text" id="recurringDescInput" placeholder="e.g., Netflix Subscription">
+    <label>Amount</label>
+    <input type="number" id="recurringAmountInput" step="0.01" placeholder="0.00">
+    <label>Type</label>
+    <select id="recurringTypeInput">
+      <option value="expense">Expense</option>
+      <option value="income">Income</option>
+    </select>
+    <label>Category</label>
+    <select id="recurringCategoryInput"></select>
+    <label>Frequency</label>
+    <select id="recurringFrequencyInput">
+      <option value="weekly">Weekly</option>
+      <option value="biweekly">Bi-weekly</option>
+      <option value="monthly" selected>Monthly</option>
+      <option value="quarterly">Quarterly</option>
+      <option value="yearly">Yearly</option>
+    </select>
+    <label>Next Due Date</label>
+    <input type="date" id="recurringNextDateInput">
+    <div class="modal-actions">
+      <button id="saveRecurringBtn" class="btn-primary">Save</button>
+      <button id="cancelRecurringBtn" class="btn-secondary">Cancel</button>
+      <button id="deleteRecurringBtn" class="btn-danger" style="display:none;">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Debt Modal -->
+<div class="modal" id="debtModal">
+  <div class="modal-content">
+    <h3 id="debtModalTitle">Add Debt</h3>
+    <label>Debt Name</label>
+    <input type="text" id="debtNameInput" placeholder="e.g., Credit Card">
+    <label>Current Balance</label>
+    <input type="number" id="debtBalanceInput" step="0.01" placeholder="0.00">
+    <label>Interest Rate (%)</label>
+    <input type="number" id="debtInterestInput" step="0.01" placeholder="0.00">
+    <label>Minimum Payment</label>
+    <input type="number" id="debtMinPaymentInput" step="0.01" placeholder="0.00">
+    <label>Target Payoff Date (Optional)</label>
+    <input type="date" id="debtTargetDateInput">
+    <div class="modal-actions">
+      <button id="saveDebtBtn" class="btn-primary">Save</button>
+      <button id="cancelDebtBtn" class="btn-secondary">Cancel</button>
+      <button id="deleteDebtBtn" class="btn-danger" style="display:none;">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Financial Goal Modal -->
+<div class="modal" id="financialGoalModal">
+  <div class="modal-content">
+    <h3 id="financialGoalModalTitle">Add Financial Goal</h3>
+    <label>Goal Name</label>
+    <input type="text" id="financialGoalNameInput" placeholder="e.g., Emergency Fund">
+    <label>Goal Type</label>
+    <select id="financialGoalTypeInput">
+      <option value="savings">Savings</option>
+      <option value="debt_payoff">Debt Payoff</option>
+      <option value="investment">Investment</option>
+      <option value="purchase">Major Purchase</option>
+      <option value="other">Other</option>
+    </select>
+    <label>Target Amount</label>
+    <input type="number" id="financialGoalTargetInput" step="0.01" placeholder="0.00">
+    <label>Current Amount</label>
+    <input type="number" id="financialGoalCurrentInput" step="0.01" placeholder="0.00">
+    <label>Target Date (Optional)</label>
+    <input type="date" id="financialGoalDateInput">
+    <div class="modal-actions">
+      <button id="saveFinancialGoalBtn" class="btn-primary">Save</button>
+      <button id="cancelFinancialGoalBtn" class="btn-secondary">Cancel</button>
+      <button id="deleteFinancialGoalBtn" class="btn-danger" style="display:none;">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Budget Management Modal -->
+<div class="modal" id="budgetModal">
+  <div class="modal-content">
+    <h3 id="budgetModalTitle">Create Budget</h3>
+    <label>Budget Name</label>
+    <input type="text" id="budgetNameInput" placeholder="e.g., Family Budget">
+    <label>Budget Type</label>
+    <select id="budgetTypeInput">
+      <option value="personal">Personal</option>
+      <option value="shared">Shared</option>
+    </select>
+    <div class="modal-actions">
+      <button id="saveBudgetBtn" class="btn-primary">Create</button>
+      <button id="cancelBudgetBtn" class="btn-secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Manage Budgets Modal -->
+<div class="modal" id="manageBudgetsModal">
+  <div class="modal-content settings-modal-content">
+    <div class="settings-header">
+      <h2>Manage Budgets</h2>
+      <button id="closeManageBudgetsBtn" class="close-btn">✕</button>
+    </div>
+    <div class="settings-content">
+      <div class="settings-section">
+        <h3>My Budgets</h3>
+        <div id="budgetsList"></div>
+        <button id="createBudgetFromManageBtn" class="btn-secondary" style="margin-top: 15px;">+ Create New Budget</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Join Budget Modal -->
+<div class="modal" id="joinBudgetModal">
+  <div class="modal-content">
+    <h3>Join Shared Budget</h3>
+    <label>Invite Code</label>
+    <input type="text" id="inviteCodeInput" placeholder="Enter 8-character code" maxlength="8" style="text-transform: uppercase;">
+    <div class="modal-actions">
+      <button id="joinBudgetSubmitBtn" class="btn-primary">Join Budget</button>
+      <button id="cancelJoinBudgetBtn" class="btn-secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Budget Settings Modal (for shared budgets) -->
+<div class="modal" id="budgetSettingsModal">
+  <div class="modal-content settings-modal-content">
+    <div class="settings-header">
+      <h2 id="budgetSettingsTitle">Budget Settings</h2>
+      <button id="closeBudgetSettingsBtn" class="close-btn">✕</button>
+    </div>
+    <div class="settings-content">
+      <div class="settings-section">
+        <h3>Members</h3>
+        <div id="budgetMembersList"></div>
+      </div>
+      <div class="settings-section" id="budgetInviteSection" style="display: none;">
+        <h3>Invite Code</h3>
+        <div id="inviteCodeDisplay" style="padding: 12px; background: var(--bg-tertiary); border-radius: 6px; margin-bottom: 10px;">
+          <code style="font-size: 18px; font-weight: 600; letter-spacing: 2px;" id="inviteCodeText">Loading...</code>
+        </div>
+        <button id="generateInviteBtn" class="btn-secondary">Generate New Code</button>
+        <button id="copyInviteLinkBtn" class="btn-secondary" style="margin-left: 8px;">Copy Link</button>
+      </div>
+      <div class="settings-section" id="budgetDangerSection" style="display: none;">
+        <h3 style="color: var(--danger);">Danger Zone</h3>
+        <button id="deleteBudgetBtn" class="btn-danger">Delete Budget</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- Scripts -->
+<!-- Supabase CDN (fallback if module import fails) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.26.0.min.js"></script>
+<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+<script>
+  // Load Supabase configuration from server (.env.local)
+  (async function() {
+    try {
+      const response = await fetch('/api/supabase-config');
+      if (!response.ok) {
+        throw new Error('Failed to load Supabase config');
+      }
+      const config = await response.json();
+      
+      window.SUPABASE_URL = config.url;
+      window.SUPABASE_ANON_KEY = config.anonKey;
+      
+      // Initialize Supabase
+      if (window.supabase && typeof window.supabase.createClient === 'function') {
+        window.supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, {
+          auth: {
+            persistSession: true, // Enabled to allow session during redirect, but will be cleared on refresh
+            autoRefreshToken: false,
+            detectSessionInUrl: false
+          },
+          realtime: {
+            params: {
+              eventsPerSecond: 10
+            }
+          }
+        });
+        console.log('✅ Supabase initialized successfully');
+      }
+    } catch (error) {
+      console.error('❌ Error loading Supabase config:', error);
+      console.error('Make sure your .env.local file contains SUPABASE_URL and SUPABASE_ANON_KEY');
+    }
+  })();
+</script>
+<script type="module" src="js/app.js"></script>
+
+</body>
+</html>

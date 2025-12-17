@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Budget Dashboard - Sign In</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="styles/styles.css">
+  <style>
+    .auth-container {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-primary);
+      padding: 20px;
+    }
+
+    .auth-box {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 40px;
+      width: 100%;
+      max-width: 400px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    }
+
+    .auth-box h1 {
+      margin: 0 0 8px 0;
+      color: var(--accent);
+      font-size: 28px;
+      text-align: center;
+    }
+
+    .auth-box .subtitle {
+      text-align: center;
+      color: var(--text-secondary);
+      margin-bottom: 30px;
+      font-size: 14px;
+    }
+
+    .auth-tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 24px;
+      border-bottom: 2px solid var(--border);
+    }
+
+    .auth-tab {
+      flex: 1;
+      padding: 12px;
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 15px;
+      font-weight: 500;
+      border-bottom: 3px solid transparent;
+      margin-bottom: -2px;
+    }
+
+    .auth-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    .auth-form {
+      display: none;
+    }
+
+    .auth-form.active {
+      display: block;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    .form-group label {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--text-primary);
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .form-group input {
+      width: 100%;
+      padding: 12px;
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 15px;
+      box-sizing: border-box;
+    }
+
+    .form-group input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.1);
+    }
+
+    .auth-btn {
+      width: 100%;
+      padding: 12px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: all 0.2s;
+    }
+
+    .auth-btn:hover {
+      background: var(--accent-hover);
+      transform: translateY(-1px);
+    }
+
+    .auth-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .error-message {
+      background: rgba(248, 113, 113, 0.1);
+      border: 1px solid var(--danger);
+      color: var(--danger);
+      padding: 12px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+      font-size: 14px;
+      display: none;
+    }
+
+    .error-message.show {
+      display: block;
+    }
+
+    .success-message {
+      background: rgba(74, 222, 128, 0.1);
+      border: 1px solid var(--success);
+      color: var(--success);
+      padding: 12px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+      font-size: 14px;
+      display: none;
+    }
+
+    .success-message.show {
+      display: block;
+    }
+
+    .forgot-password {
+      text-align: center;
+      margin-top: 16px;
+    }
+
+    .forgot-password a {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 14px;
+    }
+
+    .forgot-password a:hover {
+      text-decoration: underline;
+    }
+
+    .loading {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+
+<div class="auth-container">
+  <div class="auth-box">
+    <h1>💰 Budget Dashboard</h1>
+    <p class="subtitle">Manage your finances with ease</p>
+
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-tab="signin">Sign In</button>
+      <button class="auth-tab" data-tab="signup">Sign Up</button>
+    </div>
+
+    <div id="errorMessage" class="error-message"></div>
+    <div id="successMessage" class="success-message"></div>
+
+    <!-- Sign In Form -->
+    <form id="signinForm" class="auth-form active">
+      <div class="form-group">
+        <label for="signinEmail">Email</label>
+        <input type="email" id="signinEmail" required autocomplete="email">
+      </div>
+      <div class="form-group">
+        <label for="signinPassword">Password</label>
+        <input type="password" id="signinPassword" required autocomplete="current-password">
+      </div>
+      <button type="submit" class="auth-btn" id="signinBtn">
+        Sign In
+      </button>
+      <div class="forgot-password">
+        <a href="#" id="forgotPasswordLink">Forgot password?</a>
+      </div>
+    </form>
+
+    <!-- Sign Up Form -->
+    <form id="signupForm" class="auth-form">
+      <div class="form-group">
+        <label for="signupDisplayName">Display Name</label>
+        <input type="text" id="signupDisplayName" required autocomplete="name">
+      </div>
+      <div class="form-group">
+        <label for="signupEmail">Email</label>
+        <input type="email" id="signupEmail" required autocomplete="email">
+      </div>
+      <div class="form-group">
+        <label for="signupPassword">Password</label>
+        <input type="password" id="signupPassword" required autocomplete="new-password" minlength="6">
+        <small style="color: var(--text-secondary); font-size: 12px; margin-top: 4px; display: block;">
+          Must be at least 6 characters
+        </small>
+      </div>
+      <button type="submit" class="auth-btn" id="signupBtn">
+        Sign Up
+      </button>
+    </form>
+
+    <!-- Reset Password Form -->
+    <form id="resetPasswordForm" class="auth-form">
+      <div class="form-group">
+        <label for="resetEmail">Email</label>
+        <input type="email" id="resetEmail" required autocomplete="email">
+      </div>
+      <button type="submit" class="auth-btn" id="resetBtn">
+        Send Reset Link
+      </button>
+      <div class="forgot-password">
+        <a href="#" id="backToSigninLink">Back to Sign In</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Supabase CDN -->
+<script>
+  // Initialize Supabase after CDN loads and config is fetched
+  window.supabaseReady = (async function() {
+    try {
+      // Load Supabase CDN
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.appendChild(script);
+      });
+      
+      // Wait a bit for the library to expose itself
+      let retries = 0;
+      while (typeof window.supabase === 'undefined' && retries < 20) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        retries++;
+      }
+      
+      if (typeof window.supabase === 'undefined') {
+        throw new Error('Supabase library failed to load');
+      }
+      
+      // Fetch configuration from server
+      const response = await fetch('/api/supabase-config');
+      if (!response.ok) {
+        throw new Error('Failed to load Supabase config');
+      }
+      const config = await response.json();
+      
+      // Initialize Supabase client
+      if (typeof window.supabase.createClient === 'function') {
+        window.supabase = window.supabase.createClient(config.url, config.anonKey, {
+          auth: {
+            persistSession: true, // Enabled to allow session during redirect (will be cleared on refresh)
+            autoRefreshToken: false,
+            detectSessionInUrl: false
+          }
+        });
+        
+        // Clear any existing session when loading auth page (for clean sign-in)
+        // This ensures we can sign in fresh even if navigating from a logged-in state
+        try {
+          const { data: { session } } = await window.supabase.auth.getSession();
+          if (session) {
+            // Clear the session to allow fresh sign-in
+            await window.supabase.auth.signOut();
+          }
+        } catch (e) {
+          // Ignore errors - session might already be cleared
+        }
+        
+        // Clear sessionStorage flag to allow fresh sign-in
+        sessionStorage.removeItem('supabase_auth_loaded');
+        
+        console.log('✅ Supabase initialized successfully');
+        return true;
+      } else {
+        throw new Error('Supabase createClient function not available');
+      }
+    } catch (error) {
+      console.error('❌ Error loading Supabase config:', error);
+      console.error('Make sure your .env.local file contains SUPABASE_URL and SUPABASE_ANON_KEY');
+      // Show error message without replacing the entire page
+      const errorDiv = document.createElement('div');
+      errorDiv.id = 'supabase-config-error';
+      errorDiv.style.cssText = 'position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #ff4444; color: white; padding: 20px; border-radius: 8px; z-index: 10000; max-width: 500px; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.3);';
+      errorDiv.innerHTML = `
+        <h3 style="margin: 0 0 10px 0;">⚠️ Configuration Error</h3>
+        <p style="margin: 0 0 10px 0; font-size: 14px;">Unable to load Supabase configuration.</p>
+        <p style="margin: 0; font-size: 12px; opacity: 0.9;">
+          Make sure your .env.local file contains:<br>
+          SUPABASE_URL=your_project_url<br>
+          SUPABASE_ANON_KEY=your_anon_key
+        </p>
+        <button onclick="this.parentElement.remove()" style="margin-top: 10px; padding: 8px 16px; background: white; color: #ff4444; border: none; border-radius: 4px; cursor: pointer;">Dismiss</button>
+      `;
+      document.body.appendChild(errorDiv);
+      return false;
+    }
+  })();
+</script>
+
+<script type="module">
+  // Load auth service
+  let authService;
+  (async function() {
+    // Wait for Supabase to be initialized
+    await window.supabaseReady;
+    
+    try {
+      const services = await import('../services/supabase-browser.js');
+      authService = services.authService;
+    } catch (e) {
+      try {
+        const services = await import('../services/supabase-service.js');
+        authService = services.authService;
+      } catch (e2) {
+        console.error('Failed to load Supabase services:', e2);
+        // Fallback: use direct Supabase client
+        if (window.supabase) {
+          authService = {
+            signUp: (email, password, metadata) => window.supabase.auth.signUp({ email, password, options: { data: metadata } }),
+            signIn: (email, password) => window.supabase.auth.signInWithPassword({ email, password }),
+            signOut: () => window.supabase.auth.signOut(),
+            resetPassword: (email) => window.supabase.auth.resetPasswordForEmail(email),
+            getSession: () => window.supabase.auth.getSession()
+          };
+        }
+      }
+    }
+    
+    if (!authService) {
+      document.body.innerHTML = '<div style="padding: 40px; text-align: center;"><h2>Configuration Error</h2><p>Please configure Supabase in DashBoard.html</p></div>';
+      throw new Error('Auth service not available');
+    }
+
+  // Tab switching
+  const authTabs = document.querySelectorAll('.auth-tab');
+  if (authTabs.length > 0) {
+    authTabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        const tabName = tab.dataset.tab;
+        
+        // Update tabs
+        document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        
+        // Update forms
+        document.querySelectorAll('.auth-form').forEach(f => f.classList.remove('active'));
+        if (tabName === 'signin') {
+          const signinForm = document.getElementById('signinForm');
+          if (signinForm) signinForm.classList.add('active');
+        } else if (tabName === 'signup') {
+          const signupForm = document.getElementById('signupForm');
+          if (signupForm) signupForm.classList.add('active');
+        }
+        
+        hideMessages();
+      });
+    });
+  }
+
+  // Sign In
+  const signinForm = document.getElementById('signinForm');
+  if (signinForm) {
+    signinForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('signinBtn');
+    const email = document.getElementById('signinEmail').value;
+    const password = document.getElementById('signinPassword').value;
+    
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading"></span>Signing in...';
+    hideMessages();
+
+    // Clear any existing session before signing in (ensures clean sign-in)
+    try {
+      const { data: { session } } = await window.supabase.auth.getSession();
+      if (session) {
+        await window.supabase.auth.signOut();
+        // Small delay to ensure signout completes
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    } catch (e) {
+      // Ignore errors
+    }
+
+    const { data, error } = await authService.signIn(email, password);
+    
+    if (error) {
+      showError(error.message);
+      btn.disabled = false;
+      btn.textContent = 'Sign In';
+    } else {
+      // Clear sessionStorage flag before redirect
+      sessionStorage.removeItem('supabase_auth_loaded');
+      // Redirect to dashboard
+      window.location.href = '/DashBoard.html';
+    }
+  });
+  }
+
+  // Sign Up
+  const signupForm = document.getElementById('signupForm');
+  if (signupForm) {
+    signupForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('signupBtn');
+    const displayName = document.getElementById('signupDisplayName').value;
+    const email = document.getElementById('signupEmail').value;
+    const password = document.getElementById('signupPassword').value;
+    
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading"></span>Creating account...';
+    hideMessages();
+
+    // DEBUG MODE: Auto-confirm test emails for easier testing
+    // These emails will be automatically signed in after signup (skips email verification)
+    // IMPORTANT: Supabase blocks @example.com domains. Use these test emails instead:
+    // - test@testmail.com
+    // - test2@testmail.com
+    // Or configure Supabase Auth settings to allow @example.com domains
+    const testEmails = ['test@testmail.com', 'test2@testmail.com', 'test@example.com', 'test2@example.com'];
+    const isTestEmail = testEmails.includes(email.toLowerCase());
+    
+    // If using @example.com, show helpful error message
+    if (email.toLowerCase().includes('@example.com')) {
+      showError('Supabase blocks @example.com emails. For debugging, use test@testmail.com or test2@testmail.com instead. Or configure Supabase Auth to allow @example.com domains.');
+      btn.disabled = false;
+      btn.textContent = 'Sign Up';
+      return;
+    }
+
+    // For test emails, we need to handle email confirmation differently
+    const signUpOptions = {
+      display_name: displayName,
+      username: displayName.toLowerCase().replace(/\s+/g, '_')
+    };
+    
+    // Add email redirect for test emails (helps with confirmation)
+    if (isTestEmail) {
+      signUpOptions.emailRedirectTo = window.location.origin + '/DashBoard.html';
+    }
+
+    const { data, error } = await authService.signUp(email, password, signUpOptions);
+    
+    if (error) {
+      showError(error.message);
+      btn.disabled = false;
+      btn.textContent = 'Sign Up';
+    } else {
+      // For test emails, try to auto-sign in
+      if (isTestEmail && data.user) {
+        // Check if signup returned a session (email confirmation disabled)
+        if (data.session) {
+          // Session is available from signup, wait a moment for it to be set, then redirect
+          showSuccess('Test account created! Redirecting...');
+          // Clear the refresh flag so redirect works
+          sessionStorage.removeItem('supabase_auth_loaded');
+          // Give Supabase a moment to set the session
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          window.location.href = '/DashBoard.html';
+        } else {
+          // No session from signup, try to sign in explicitly
+          showSuccess('Test account created! Signing you in...');
+          await new Promise(resolve => setTimeout(resolve, 500)); // Small delay
+          const { data: signInData, error: signInError } = await authService.signIn(email, password);
+          if (signInError) {
+            if (signInError.message && signInError.message.includes('not confirmed')) {
+              showError('Email confirmation required. Please disable "Confirm email" in Supabase Dashboard → Authentication → Settings for development.');
+            } else {
+              showError('Account created but auto-signin failed: ' + signInError.message);
+            }
+            btn.disabled = false;
+            btn.textContent = 'Sign Up';
+            setTimeout(() => {
+              document.querySelector('.auth-tab[data-tab="signin"]').click();
+            }, 3000);
+          } else {
+            // Wait a moment for session to be set, then redirect
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            window.location.href = '/DashBoard.html';
+          }
+        }
+      } else {
+        showSuccess('Account created! Please check your email to verify your account, then sign in.');
+        btn.disabled = false;
+        btn.textContent = 'Sign Up';
+        
+        // Switch to sign in after 3 seconds
+        setTimeout(() => {
+          document.querySelector('.auth-tab[data-tab="signin"]').click();
+        }, 3000);
+      }
+    }
+  });
+  }
+
+  // Forgot Password
+  const forgotPasswordLink = document.getElementById('forgotPasswordLink');
+  if (forgotPasswordLink) {
+    forgotPasswordLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      document.querySelectorAll('.auth-form').forEach(f => f.classList.remove('active'));
+      document.getElementById('resetPasswordForm').classList.add('active');
+      document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'));
+      hideMessages();
+    });
+  }
+
+  const backToSigninLink = document.getElementById('backToSigninLink');
+  if (backToSigninLink) {
+    backToSigninLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      document.querySelectorAll('.auth-form').forEach(f => f.classList.remove('active'));
+      const signinForm = document.getElementById('signinForm');
+      if (signinForm) signinForm.classList.add('active');
+      const signinTab = document.querySelector('.auth-tab[data-tab="signin"]');
+      if (signinTab) signinTab.classList.add('active');
+      hideMessages();
+    });
+  }
+
+  // Reset Password
+  const resetPasswordForm = document.getElementById('resetPasswordForm');
+  if (resetPasswordForm) {
+    resetPasswordForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('resetBtn');
+    const email = document.getElementById('resetEmail').value;
+    
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loading"></span>Sending...';
+    hideMessages();
+
+    const { data, error } = await authService.resetPassword(email);
+    
+    if (error) {
+      showError(error.message);
+      btn.disabled = false;
+      btn.textContent = 'Send Reset Link';
+    } else {
+      showSuccess('Password reset link sent! Check your email.');
+      btn.disabled = false;
+      btn.textContent = 'Send Reset Link';
+    }
+  });
+  }
+
+  function showError(message) {
+    const errorEl = document.getElementById('errorMessage');
+    if (errorEl) {
+      errorEl.textContent = message;
+      errorEl.classList.add('show');
+      const successEl = document.getElementById('successMessage');
+      if (successEl) successEl.classList.remove('show');
+    }
+  }
+
+  function showSuccess(message) {
+    const successEl = document.getElementById('successMessage');
+    if (successEl) {
+      successEl.textContent = message;
+      successEl.classList.add('show');
+      const errorEl = document.getElementById('errorMessage');
+      if (errorEl) errorEl.classList.remove('show');
+    }
+  }
+
+  function hideMessages() {
+    const errorEl = document.getElementById('errorMessage');
+    const successEl = document.getElementById('successMessage');
+    if (errorEl) errorEl.classList.remove('show');
+    if (successEl) successEl.classList.remove('show');
+  }
+
+    // No session check - always require login
+  })();
+</script>
+
+</body>
+</html>
+
