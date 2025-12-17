@@ -42,8 +42,23 @@ export const LONG_PRESS_MOVE_THRESHOLD = 10; // pixels
 // Inactivity Timeout (5 minutes)
 export const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // milliseconds
 
+// API Server Port (used for local fallback)
+export const API_SERVER_PORT = 3000;
+
 // API Configuration
-export const API_BASE_URL = 'http://localhost:3000/api';
+// On Render/production we want same-origin calls (avoids mixed-content/CORS issues).
+// When opened from file:// (origin "null") or non-server contexts, fall back to localhost.
+export const API_BASE_URL = (() => {
+  try {
+    if (typeof window !== 'undefined' && window.location) {
+      const origin = window.location.origin;
+      if (origin && origin !== 'null') return `${origin}/api`;
+    }
+  } catch {
+    // ignore
+  }
+  return `http://localhost:${API_SERVER_PORT}/api`;
+})();
 
 // Default Categories
 export const DEFAULT_CATEGORIES = [
@@ -108,9 +123,6 @@ export const CHART_COLORS = {
   CALENDAR_HEATMAP_GREEN_BASE: 250,
   CALENDAR_HEATMAP_GREEN_RANGE: 190
 };
-
-// API Server Port
-export const API_SERVER_PORT = 3000;
 
 // Toast Message Types
 export const TOAST_TYPES = {
