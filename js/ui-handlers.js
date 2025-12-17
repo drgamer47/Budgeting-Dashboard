@@ -1996,23 +1996,56 @@ export function importCsv() {
             // no-op
           }
 
-          const rows = uniqueImported.map(tx => ({
-            date: tx.date,
-            description: tx.description,
-            amount: tx.amount,
-            type: tx.type,
-            category_id: isValidUUID(tx.categoryId) ? tx.categoryId : null
-          }));
+          // Validate amounts against database DECIMAL(10, 2) limit (max: 99,999,999.99)
+          const MAX_AMOUNT = 99999999.99;
+          const validRows = [];
+          const skippedRows = [];
+          
+          for (const tx of uniqueImported) {
+            const amount = parseFloat(tx.amount);
+            if (isNaN(amount) || Math.abs(amount) >= MAX_AMOUNT) {
+              skippedRows.push({
+                description: tx.description,
+                amount: tx.amount,
+                reason: isNaN(amount) ? 'Invalid amount' : 'Amount too large (max: $99,999,999.99)'
+              });
+              continue;
+            }
+            
+            validRows.push({
+              date: tx.date,
+              description: tx.description,
+              amount: amount,
+              type: tx.type,
+              category_id: isValidUUID(tx.categoryId) ? tx.categoryId : null
+            });
+          }
+          
+          if (validRows.length === 0) {
+            showToast(
+              `No valid transactions to import. ${skippedRows.length > 0 ? `Skipped ${skippedRows.length} transaction(s) with invalid amounts.` : ''}`,
+              TOAST_TYPES.ERROR
+            );
+            return;
+          }
+          
+          if (skippedRows.length > 0) {
+            logger.warn(`Skipped ${skippedRows.length} transaction(s) with invalid amounts:`, skippedRows);
+            showToast(
+              `Skipped ${skippedRows.length} transaction(s) with invalid amounts (max: $99,999,999.99). Importing ${validRows.length} valid transaction(s)...`,
+              TOAST_TYPES.WARNING
+            );
+          }
 
           // Prefer bulk insert to avoid spamming requests
           if (typeof transactionService.bulkCreateTransactions === 'function') {
-            const { error } = await transactionService.bulkCreateTransactions(currentBudget.id, currentUser.id, rows);
+            const { error } = await transactionService.bulkCreateTransactions(currentBudget.id, currentUser.id, validRows);
             if (error) {
               throw error;
             }
           } else {
             // Fallback: single inserts (correct signature)
-            for (const row of rows) {
+            for (const row of validRows) {
               const { error } = await transactionService.createTransaction(currentBudget.id, currentUser.id, row);
               if (error) {
                 throw error;
@@ -2026,11 +2059,10 @@ export function importCsv() {
           // Ensure visible refresh even if loadDataFromSupabase bails early
           renderAll();
 
-          showToast(
-            `Imported ${uniqueImported.length} transaction${uniqueImported.length === 1 ? '' : 's'} from CSV` +
-              (duplicates ? ` (skipped ${duplicates} duplicate${duplicates === 1 ? '' : 's'})` : ''),
-            TOAST_TYPES.SUCCESS
-          );
+          const successMsg = `Imported ${validRows.length} transaction${validRows.length === 1 ? '' : 's'} from CSV` +
+            (duplicates ? ` (skipped ${duplicates} duplicate${duplicates === 1 ? '' : 's'})` : '') +
+            (skippedRows.length > 0 ? ` (skipped ${skippedRows.length} invalid amount${skippedRows.length === 1 ? '' : 's'})` : '');
+          showToast(successMsg, TOAST_TYPES.SUCCESS);
           return;
         } catch (error) {
           // Roll back optimistic UI rows (if any)
@@ -2078,15 +2110,45 @@ export function importCsv() {
       }
 
       // LocalStorage mode
-      data.transactions.push(...uniqueImported);
-      data.lastImportBatchIds = uniqueImported.map(t => t.id);
+      // Validate amounts (same limit as database for consistency)
+      const MAX_AMOUNT = 99999999.99;
+      const validForLocal = [];
+      const skippedForLocal = [];
+      
+      for (const tx of uniqueImported) {
+        const amount = parseFloat(tx.amount);
+        if (isNaN(amount) || Math.abs(amount) >= MAX_AMOUNT) {
+          skippedForLocal.push({
+            description: tx.description,
+            amount: tx.amount,
+            reason: isNaN(amount) ? 'Invalid amount' : 'Amount too large (max: $99,999,999.99)'
+          });
+          continue;
+        }
+        validForLocal.push(tx);
+      }
+      
+      if (validForLocal.length === 0) {
+        showToast(
+          `No valid transactions to import. ${skippedForLocal.length > 0 ? `Skipped ${skippedForLocal.length} transaction(s) with invalid amounts.` : ''}`,
+          TOAST_TYPES.ERROR
+        );
+        return;
+      }
+      
+      if (skippedForLocal.length > 0) {
+        logger.warn(`Skipped ${skippedForLocal.length} transaction(s) with invalid amounts:`, skippedForLocal);
+      }
+      
+      data.transactions.push(...validForLocal);
+      data.lastImportBatchIds = validForLocal.map(t => t.id);
       stateManager.saveState();
       renderAll();
-      showToast(
-        `Imported ${uniqueImported.length} transaction${uniqueImported.length === 1 ? '' : 's'} from CSV` +
-          (duplicates ? ` (skipped ${duplicates} duplicate${duplicates === 1 ? '' : 's'})` : ''),
-        TOAST_TYPES.SUCCESS
-      );
+      
+      const localSuccessMsg = `Imported ${validForLocal.length} transaction${validForLocal.length === 1 ? '' : 's'} from CSV` +
+        (duplicates ? ` (skipped ${duplicates} duplicate${duplicates === 1 ? '' : 's'})` : '') +
+        (skippedForLocal.length > 0 ? ` (skipped ${skippedForLocal.length} invalid amount${skippedForLocal.length === 1 ? '' : 's'})` : '');
+      showToast(localSuccessMsg, TOAST_TYPES.SUCCESS);
     };
 
     reader.readAsText(file);
