@@ -26,77 +26,75 @@ let categoryChart = null;
 let monthlyChart = null;
 let sankeyChartDiv = null;
 let resizeTimeout = null;
-let sankeyAnimTimer = null;
-
-function stopSankeyAnimation() {
-  if (sankeyAnimTimer) {
-    clearInterval(sankeyAnimTimer);
-    sankeyAnimTimer = null;
-  }
-}
+let sankeyAnimRafId = null;
 
 function clamp01(n) {
   return Math.max(0, Math.min(1, n));
 }
 
-function parseRgba(color) {
-  if (typeof color !== 'string') return null;
-  const m = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([0-9.]+))?\s*\)/i);
-  if (!m) return null;
-  return {
-    r: parseInt(m[1], 10),
-    g: parseInt(m[2], 10),
-    b: parseInt(m[3], 10),
-    a: m[4] === undefined ? 1 : parseFloat(m[4])
-  };
+function stopSankeyAnimation() {
+  if (sankeyAnimRafId) {
+    cancelAnimationFrame(sankeyAnimRafId);
+    sankeyAnimRafId = null;
+  }
 }
 
-function startSankeyFlowAnimation(chartDiv, baseLinkColors, phases) {
+/**
+ * Animate the Sankey "drawing in" from left->right by staging link thickness:
+ * 1) income sources -> Income
+ * 2) Income -> categories
+ * 3) categories -> descriptions
+ */
+function startSankeyRevealAnimation(chartDiv, baseValues, linkLevels) {
   if (!chartDiv || typeof Plotly === 'undefined') return;
-  if (!Array.isArray(baseLinkColors) || baseLinkColors.length === 0) return;
+  if (!Array.isArray(baseValues) || baseValues.length === 0) return;
 
   stopSankeyAnimation();
 
+  const d0 = 320;
+  const d1 = 320;
+  const d2 = 420;
+  const total = d0 + d1 + d2;
   const startedAt = performance.now();
-  const durationMs = 1400;
-  const tickMs = 80; // ~12.5fps to keep it light
-  const speed = 0.012; // radians per ms
-  const phaseArr = Array.isArray(phases) && phases.length === baseLinkColors.length
-    ? phases
-    : baseLinkColors.map((_, i) => i * 0.35);
+  let lastPaint = 0;
 
-  const baseParsed = baseLinkColors.map(c => parseRgba(c) || { r: 96, g: 165, b: 250, a: 0.45 });
-
-  sankeyAnimTimer = setInterval(() => {
+  const step = () => {
     const t = performance.now() - startedAt;
-    if (t >= durationMs) {
+    // Throttle Plotly updates to ~30fps to keep it smooth/light
+    if (t - lastPaint >= 33) {
+      lastPaint = t;
+      const p0 = clamp01(t / d0);
+      const p1 = clamp01((t - d0) / d1);
+      const p2 = clamp01((t - d0 - d1) / d2);
+
+      const v = baseValues.map((val, i) => {
+        const level = linkLevels[i] || 0;
+        const scale = level === 0 ? p0 : (level === 1 ? p1 : p2);
+        return val * scale;
+      });
+
+      try {
+        Plotly.restyle(chartDiv, { 'link.value': [v] }, [0]);
+      } catch {
+        stopSankeyAnimation();
+        return;
+      }
+    }
+
+    if (t >= total) {
       stopSankeyAnimation();
       try {
-        Plotly.restyle(chartDiv, { 'link.color': [baseLinkColors] }, [0]);
+        Plotly.restyle(chartDiv, { 'link.value': [baseValues] }, [0]);
       } catch {
         // ignore
       }
       return;
     }
 
-    const newColors = baseParsed.map((c, i) => {
-      const w = (Math.sin(t * speed + phaseArr[i]) + 1) / 2; // 0..1
-      // brighten slightly + pulse alpha to create a subtle flowing/shimmer effect
-      const brighten = 0.28 * w;
-      const r = Math.round(c.r + (255 - c.r) * brighten);
-      const g = Math.round(c.g + (255 - c.g) * brighten);
-      const b = Math.round(c.b + (255 - c.b) * brighten);
-      const a = clamp01((c.a || 0.45) * (0.65 + 0.65 * w));
-      return `rgba(${r}, ${g}, ${b}, ${a})`;
-    });
+    sankeyAnimRafId = requestAnimationFrame(step);
+  };
 
-    try {
-      Plotly.restyle(chartDiv, { 'link.color': [newColors] }, [0]);
-    } catch {
-      // If the chart was re-rendered / removed mid-animation
-      stopSankeyAnimation();
-    }
-  }, tickMs);
+  sankeyAnimRafId = requestAnimationFrame(step);
 }
 
 /**
@@ -442,6 +440,7 @@ export function renderSankeyChart() {
 
   // Add income source nodes
   const incomeIndices = {};
+  let combinedIncomeIndex = -1;
   if (totalIncome > 0) {
     const sortedIncomeSources = Object.entries(incomeSources)
       .sort((a, b) => b[1] - a[1]);
@@ -453,7 +452,7 @@ export function renderSankeyChart() {
       nodeColors.push(CHART_COLORS.SANKEY_NODE);
     });
 
-    const combinedIncomeIndex = labels.length;
+    combinedIncomeIndex = labels.length;
     labels.push("Income");
     nodeColors.push("rgba(56, 189, 248, 0.7)");
 
@@ -659,9 +658,17 @@ export function renderSankeyChart() {
   }
   
   Plotly.newPlot("sankeyChart", [sankeyData], layout, config).then(() => {
-    // Animate a brief "flow" effect after initial render
-    const phases = source.map((s, i) => ((target[i] - s) * 0.6) + i * 0.25);
-    setTimeout(() => startSankeyFlowAnimation(chartDiv, linkColors, phases), 200);
+    // Animate a left->right "draw in" effect by staging link thickness.
+    // Only do this for the common income-flow case (3 levels).
+    if (combinedIncomeIndex >= 0 && value.length > 0) {
+      const linkLevels = source.map((s, i) => {
+        const t = target[i];
+        if (t === combinedIncomeIndex) return 0; // income sources -> Income
+        if (s === combinedIncomeIndex) return 1; // Income -> categories
+        return 2; // categories -> descriptions
+      });
+      setTimeout(() => startSankeyRevealAnimation(chartDiv, value, linkLevels), 120);
+    }
 
     setTimeout(() => {
       Plotly.Plots.resize(chartDiv);
