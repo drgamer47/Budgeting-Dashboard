@@ -1232,6 +1232,11 @@ function registerEventHandlers() {
   if (undoImportBtn) {
     undoImportBtn.addEventListener('click', undoImport);
   }
+
+  const removeDuplicatesBtn = document.getElementById('removeDuplicatesBtn');
+  if (removeDuplicatesBtn) {
+    removeDuplicatesBtn.addEventListener('click', removeDuplicates);
+  }
   
   // Import/Export JSON buttons
   const importJsonBtn = document.getElementById('importJsonBtn');
@@ -2225,6 +2230,98 @@ export function importCsv() {
   };
 
   inp.click();
+}
+
+/**
+ * Remove duplicate transactions based on date, amount, and description
+ */
+export async function removeDuplicates() {
+  const data = stateManager.getActiveData();
+  const transactions = Array.isArray(data.transactions) ? data.transactions : [];
+  
+  if (transactions.length === 0) {
+    showToast('No transactions to check', TOAST_TYPES.INFO);
+    return;
+  }
+
+  function normalizeDesc(s) {
+    return (s || '')
+      .toString()
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  
+  function toCents(n) {
+    const num = Number(n);
+    if (!isFinite(num)) return null;
+    return Math.round(num * 100);
+  }
+  
+  function txFingerprint(t) {
+    const cents = toCents(t.amount);
+    return `${t.date}|${cents}|${normalizeDesc(t.description)}`;
+  }
+
+  // Group transactions by fingerprint
+  const fingerprintMap = new Map();
+  transactions.forEach((tx, index) => {
+    const fp = txFingerprint(tx);
+    if (!fingerprintMap.has(fp)) {
+      fingerprintMap.set(fp, []);
+    }
+    fingerprintMap.get(fp).push({ tx, index });
+  });
+
+  // Find duplicates (fingerprints with more than one transaction)
+  const duplicatesToRemove = [];
+  fingerprintMap.forEach((group, fp) => {
+    if (group.length > 1) {
+      // Keep the first one, mark the rest for removal
+      for (let i = 1; i < group.length; i++) {
+        duplicatesToRemove.push(group[i].tx.id);
+      }
+    }
+  });
+
+  if (duplicatesToRemove.length === 0) {
+    showToast('No duplicate transactions found', TOAST_TYPES.SUCCESS);
+    return;
+  }
+
+  // Remove duplicates from Supabase if available
+  if (useSupabase && currentBudget && transactionService) {
+    try {
+      let deleted = 0;
+      for (const id of duplicatesToRemove) {
+        // Only delete if it's a CSV import ID (starts with 'csv_') or if we have the UUID
+        if (id && (id.startsWith('csv_') || id.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i))) {
+          try {
+            await transactionService.deleteTransaction(id);
+            deleted++;
+          } catch (e) {
+            // Transaction might not exist in Supabase (localStorage-only), skip
+            logger.warn('Could not delete transaction from Supabase:', id, e);
+          }
+        }
+      }
+      
+      if (loadDataFromSupabase) {
+        await loadDataFromSupabase();
+      }
+      renderAll();
+      showToast(`Removed ${deleted} duplicate transaction${deleted === 1 ? '' : 's'}`, TOAST_TYPES.SUCCESS);
+    } catch (error) {
+      logger.error('Error removing duplicates from Supabase:', error);
+      showToast(`Error removing duplicates: ${error.message || 'Unknown error'}`, TOAST_TYPES.ERROR);
+    }
+  } else {
+    // LocalStorage mode
+    data.transactions = data.transactions.filter(t => !duplicatesToRemove.includes(t.id));
+    stateManager.saveState();
+    renderAll();
+    showToast(`Removed ${duplicatesToRemove.length} duplicate transaction${duplicatesToRemove.length === 1 ? '' : 's'}`, TOAST_TYPES.SUCCESS);
+  }
 }
 
 /**
