@@ -1891,11 +1891,15 @@ export function importCsv() {
 
       for (let line of lines) {
         // Smart split that respects quotes
-        let cols = line.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g);
+        // Match quoted strings or unquoted values, handling trailing commas
+        let cols = line.match(/("(?:[^"\\]|\\.)*"|[^",\r\n]+)(?=\s*,|\s*$)/g);
         if (!cols || cols.length < CSV_CONFIG.MIN_COLUMNS) continue;
 
-        // Trim and strip quotes
-        cols = cols.map(c => c.replace(/^"|"$/g, '').trim());
+        // Trim and strip quotes, filter out empty columns
+        cols = cols.map(c => c.replace(/^"|"$/g, '').trim()).filter(c => c.length > 0);
+        
+        // Only use first 4 columns (date, amount/desc, desc/amount, optional category/ref)
+        if (cols.length > 4) cols = cols.slice(0, 4);
 
         const dateStr = normalizeDate(cols[0]);
         if (!dateStr) continue;
