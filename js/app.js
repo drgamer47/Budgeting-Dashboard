@@ -591,7 +591,8 @@ function createLoadDataFromSupabase() {
         id: c.id,
         name: c.name,
         color: c.color,
-        monthlyBudget: parseFloat(c.monthly_budget || 0)
+        monthlyBudget: parseFloat(c.monthly_budget || 0),
+        display_order: c.display_order ?? 0
       }));
       
       // If no categories exist, create default ones
@@ -653,7 +654,8 @@ function createLoadDataFromSupabase() {
             id: c.id,
             name: c.name,
             color: c.color,
-            monthlyBudget: parseFloat(c.monthly_budget || 0)
+            monthlyBudget: parseFloat(c.monthly_budget || 0),
+            display_order: c.display_order ?? 0
           }));
           logger.log('Loaded', transformedCategories.length, 'categories from Supabase after creation');
         } else {
