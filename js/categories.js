@@ -64,6 +64,18 @@ export function ensureDefaultCategories(data) {
 export function renderCategoryFilters() {
   const data = stateManager.getActiveData();
   const categories = Array.isArray(data.categories) ? data.categories : [];
+  
+  // Sort categories by display_order (or fallback to name for localStorage)
+  const sortedCategories = [...categories].sort((a, b) => {
+    const orderA = a.display_order ?? a.order ?? 0;
+    const orderB = b.display_order ?? b.order ?? 0;
+    if (orderA !== orderB) {
+      return orderA - orderB;
+    }
+    // Fallback to name if order is the same
+    return (a.name || '').localeCompare(b.name || '');
+  });
+  
   const catSel = document.getElementById("filterCategory");
   const drawerCat = document.getElementById("drawerCategory");
 
@@ -72,7 +84,7 @@ export function renderCategoryFilters() {
   catSel.innerHTML = `<option value="">Category: All</option>`;
   drawerCat.innerHTML = "";
 
-  categories.forEach(c => {
+  sortedCategories.forEach(c => {
     const o1 = document.createElement("option");
     o1.value = c.id;
     o1.textContent = c.name;
@@ -94,10 +106,42 @@ export function renderCategoriesList() {
   
   const categories = stateManager.getActiveData().categories;
   
-  container.innerHTML = categories.map(cat => {
+  // Sort categories by display_order (or fallback to name for localStorage)
+  const sortedCategories = [...categories].sort((a, b) => {
+    const orderA = a.display_order ?? a.order ?? 0;
+    const orderB = b.display_order ?? b.order ?? 0;
+    if (orderA !== orderB) {
+      return orderA - orderB;
+    }
+    // Fallback to name if order is the same
+    return (a.name || '').localeCompare(b.name || '');
+  });
+  
+  container.innerHTML = sortedCategories.map((cat, index) => {
     const budget = cat.monthlyBudget || cat.monthly_budget || 0;
+    const isFirst = index === 0;
+    const isLast = index === sortedCategories.length - 1;
+    
     return `
-      <div class="category-item">
+      <div class="category-item" data-category-id="${cat.id}">
+        <div class="category-order-controls">
+          <button 
+            onclick="window.categoryModule.moveCategoryUp('${cat.id}')" 
+            class="btn-order ${isFirst ? 'disabled' : ''}" 
+            ${isFirst ? 'disabled' : ''}
+            title="Move up"
+            aria-label="Move category up">
+            ▲
+          </button>
+          <button 
+            onclick="window.categoryModule.moveCategoryDown('${cat.id}')" 
+            class="btn-order ${isLast ? 'disabled' : ''}" 
+            ${isLast ? 'disabled' : ''}
+            title="Move down"
+            aria-label="Move category down">
+            ▼
+          </button>
+        </div>
         <div class="category-color" style="background: ${cat.color}"></div>
         <div class="category-info">
           <div class="category-name">${cat.name}</div>
@@ -392,10 +436,76 @@ export function getCategories() {
   return stateManager.getActiveData().categories || [];
 }
 
+/**
+ * Move category up in order
+ * @param {string} categoryId - Category ID
+ */
+export async function moveCategoryUp(categoryId) {
+  if (!useSupabase || !currentBudget || !categoryService) {
+    showToast('Category reordering is only available with Supabase', 'Error');
+    return;
+  }
+  
+  try {
+    const { error } = await categoryService.moveCategoryUp(categoryId);
+    if (error) {
+      showToast(`Error: ${error.message}`, 'Error');
+      return;
+    }
+    
+    // Reload data from Supabase
+    if (loadDataFromSupabase) {
+      await loadDataFromSupabase();
+    }
+    
+    if (renderAll) {
+      renderAll();
+    }
+    renderCategoriesList();
+  } catch (error) {
+    logger.error('Error moving category up:', error);
+    showToast(`Error moving category: ${error.message}`, 'Error');
+  }
+}
+
+/**
+ * Move category down in order
+ * @param {string} categoryId - Category ID
+ */
+export async function moveCategoryDown(categoryId) {
+  if (!useSupabase || !currentBudget || !categoryService) {
+    showToast('Category reordering is only available with Supabase', 'Error');
+    return;
+  }
+  
+  try {
+    const { error } = await categoryService.moveCategoryDown(categoryId);
+    if (error) {
+      showToast(`Error: ${error.message}`, 'Error');
+      return;
+    }
+    
+    // Reload data from Supabase
+    if (loadDataFromSupabase) {
+      await loadDataFromSupabase();
+    }
+    
+    if (renderAll) {
+      renderAll();
+    }
+    renderCategoriesList();
+  } catch (error) {
+    logger.error('Error moving category down:', error);
+    showToast(`Error moving category: ${error.message}`, 'Error');
+  }
+}
+
 // Export module to window for onclick handlers
 if (typeof window !== 'undefined') {
   window.categoryModule = {
-    editCategory
+    editCategory,
+    moveCategoryUp,
+    moveCategoryDown
   };
 }
 

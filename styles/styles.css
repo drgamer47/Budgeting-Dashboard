@@ -1630,6 +1630,41 @@ tr:hover {
   margin-bottom: 8px;
 }
 
+.category-order-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-right: 4px;
+}
+
+.btn-order {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 4px 8px;
+  min-width: 28px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.btn-order:hover:not(:disabled) {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.btn-order:disabled,
+.btn-order.disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
 .category-color {
   width: 30px;
   height: 30px;

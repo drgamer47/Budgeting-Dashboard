@@ -350,16 +350,31 @@ export const categoryService = {
       .from('categories')
       .select('*')
       .eq('budget_id', budgetId)
-      .order('name', { ascending: true });
+      .order('display_order', { ascending: true })
+      .order('name', { ascending: true }); // Secondary sort by name
     return { data, error };
   },
 
   async createCategory(budgetId, category) {
     const supabase = getSupabase();
+    
+    // Get the maximum order for this budget to add new category at the end
+    const { data: existingCategories } = await supabase
+      .from('categories')
+      .select('display_order')
+      .eq('budget_id', budgetId)
+      .order('display_order', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    
+    const maxOrder = existingCategories?.display_order ?? -1;
+    const newOrder = maxOrder + 1;
+    
     const { data, error } = await supabase
       .from('categories')
       .insert({
         budget_id: budgetId,
+        display_order: newOrder,
         ...category
       })
       .select()
@@ -401,6 +416,124 @@ export const categoryService = {
       .delete()
       .eq('id', categoryId);
     return { error };
+  },
+
+  async moveCategoryUp(categoryId) {
+    const supabase = getSupabase();
+    
+    // Get current category
+    const { data: currentCategory, error: currentError } = await supabase
+      .from('categories')
+      .select('id, budget_id, display_order')
+      .eq('id', categoryId)
+      .single();
+    
+    if (currentError || !currentCategory) {
+      return { error: currentError || new Error('Category not found') };
+    }
+    
+    // Get the category with the next lower order (the one above)
+    const { data: categoryAbove, error: aboveError } = await supabase
+      .from('categories')
+      .select('id, display_order')
+      .eq('budget_id', currentCategory.budget_id)
+      .lt('display_order', currentCategory.display_order)
+      .order('display_order', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    
+    if (aboveError) {
+      return { error: aboveError };
+    }
+    
+    // If no category above, can't move up
+    if (!categoryAbove) {
+      return { data: null, error: null }; // Already at top
+    }
+    
+    // Swap orders
+    const tempOrder = currentCategory.display_order;
+    
+    // Update current category
+    const { error: updateCurrentError } = await supabase
+      .from('categories')
+      .update({ display_order: categoryAbove.display_order })
+      .eq('id', categoryId);
+    
+    if (updateCurrentError) {
+      return { error: updateCurrentError };
+    }
+    
+    // Update category above
+    const { error: updateAboveError } = await supabase
+      .from('categories')
+      .update({ display_order: tempOrder })
+      .eq('id', categoryAbove.id);
+    
+    if (updateAboveError) {
+      return { error: updateAboveError };
+    }
+    
+    return { data: { moved: true }, error: null };
+  },
+
+  async moveCategoryDown(categoryId) {
+    const supabase = getSupabase();
+    
+    // Get current category
+    const { data: currentCategory, error: currentError } = await supabase
+      .from('categories')
+      .select('id, budget_id, display_order')
+      .eq('id', categoryId)
+      .single();
+    
+    if (currentError || !currentCategory) {
+      return { error: currentError || new Error('Category not found') };
+    }
+    
+    // Get the category with the next higher order (the one below)
+    const { data: categoryBelow, error: belowError } = await supabase
+      .from('categories')
+      .select('id, display_order')
+      .eq('budget_id', currentCategory.budget_id)
+      .gt('display_order', currentCategory.display_order)
+      .order('display_order', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    
+    if (belowError) {
+      return { error: belowError };
+    }
+    
+    // If no category below, can't move down
+    if (!categoryBelow) {
+      return { data: null, error: null }; // Already at bottom
+    }
+    
+    // Swap orders
+    const tempOrder = currentCategory.display_order;
+    
+    // Update current category
+    const { error: updateCurrentError } = await supabase
+      .from('categories')
+      .update({ display_order: categoryBelow.display_order })
+      .eq('id', categoryId);
+    
+    if (updateCurrentError) {
+      return { error: updateCurrentError };
+    }
+    
+    // Update category below
+    const { error: updateBelowError } = await supabase
+      .from('categories')
+      .update({ display_order: tempOrder })
+      .eq('id', categoryBelow.id);
+    
+    if (updateBelowError) {
+      return { error: updateBelowError };
+    }
+    
+    return { data: { moved: true }, error: null };
   }
 };
 

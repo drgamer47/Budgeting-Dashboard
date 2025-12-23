@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS categories (
   monthly_budget DECIMAL(10, 2) DEFAULT 0,
   -- Category applies to income or expense transactions
   tx_type TEXT NOT NULL DEFAULT 'expense' CHECK (tx_type IN ('income', 'expense')),
+  display_order INTEGER DEFAULT 0,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   UNIQUE(budget_id, name)
 );
@@ -213,6 +214,7 @@ CREATE INDEX IF NOT EXISTS idx_transactions_budget ON transactions(budget_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
 CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_categories_budget ON categories(budget_id);
+CREATE INDEX IF NOT EXISTS idx_categories_order ON categories(budget_id, display_order);
 CREATE INDEX IF NOT EXISTS idx_budget_invites_code ON budget_invites(invite_code);
 CREATE INDEX IF NOT EXISTS idx_budget_invites_budget ON budget_invites(budget_id);
 
