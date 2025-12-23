@@ -374,7 +374,23 @@ export const categoryService = {
       .update(updates)
       .eq('id', categoryId)
       .select()
-      .single();
+      // Use maybeSingle to avoid 406 errors when RLS prevents row visibility
+      .maybeSingle();
+    
+    // If we got an error, check if it's a unique constraint violation
+    if (error) {
+      // 409 Conflict usually means unique constraint violation
+      if (error.code === 'PGRST204' || error.code === '23505' || error.message?.includes('duplicate') || error.message?.includes('unique')) {
+        return { 
+          data: null, 
+          error: { 
+            ...error, 
+            message: 'A category with this name already exists in this budget. Please choose a different name.' 
+          } 
+        };
+      }
+    }
+    
     return { data, error };
   },
 

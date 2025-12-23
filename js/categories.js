@@ -186,6 +186,16 @@ export async function saveCategory() {
       };
       
       if (editingCategoryId) {
+        // Check for duplicate name before updating (excluding current category)
+        const { data: existingCategories } = await categoryService.getCategories(currentBudget.id);
+        const duplicate = existingCategories?.find(
+          c => c.name.toLowerCase() === name.toLowerCase() && c.id !== editingCategoryId
+        );
+        if (duplicate) {
+          showToast('A category with this name already exists. Please choose a different name.', 'Error');
+          return;
+        }
+        
         // Update existing
         const { error } = await categoryService.updateCategory(editingCategoryId, categoryData);
         if (error) {
@@ -194,6 +204,16 @@ export async function saveCategory() {
         }
         showToast('Category updated');
       } else {
+        // Check for duplicate name before creating
+        const { data: existingCategories } = await categoryService.getCategories(currentBudget.id);
+        const duplicate = existingCategories?.find(
+          c => c.name.toLowerCase() === name.toLowerCase()
+        );
+        if (duplicate) {
+          showToast('A category with this name already exists. Please choose a different name.', 'Error');
+          return;
+        }
+        
         // Create new
         const { data: newCat, error } = await categoryService.createCategory(currentBudget.id, categoryData);
         if (error) {
