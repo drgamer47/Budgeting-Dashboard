@@ -149,6 +149,19 @@
           <h2>Total Savings</h2>
           <div class="value" id="kpiSavings">$0</div>
         </div>
+        <div class="kpi-card">
+          <h2>Net Worth</h2>
+          <div class="value" id="kpiNetWorth">$0</div>
+          <div class="kpi-breakdown" id="netWorthBreakdown" style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">
+            Assets: $0 | Liabilities: $0
+          </div>
+        </div>
+      </div>
+
+      <!-- CREDIT CARD WIDGET -->
+      <div class="chart-box" id="creditCardWidget" style="margin-bottom: 30px;">
+        <h2 class="chart-title">Credit Card</h2>
+        <div id="creditCardContent"></div>
       </div>
 
       <!-- SANKEY DIAGRAM -->
@@ -210,6 +223,9 @@
             <option value="expense">Expense</option>
           </select>
           <select id="filterCategory" class="filter-select"></select>
+          <select id="filterAccount" class="filter-select">
+            <option value="">Account: All</option>
+          </select>
         </div>
       </div>
 
@@ -355,6 +371,12 @@
         <input type="text" id="drawerMerchant" placeholder="Enter merchant or place name">
       </div>
 
+      <!-- Account full width -->
+      <div class="form-group form-group-full">
+        <label for="drawerAccount">Account <span class="label-optional">(Optional)</span></label>
+        <select id="drawerAccount"></select>
+      </div>
+
       <!-- Note full width -->
       <div class="form-group form-group-full">
         <label for="drawerNote">Note <span class="label-optional">(Optional)</span></label>
@@ -397,7 +419,14 @@
         <div id="categoriesList"></div>
         <button id="addCategoryBtn" class="btn-secondary">+ Add Category</button>
       </div>
-      
+
+      <!-- Accounts Section -->
+      <div class="settings-section">
+        <h3>Accounts</h3>
+        <div id="accountsList"></div>
+        <button id="addAccountBtn" class="btn-secondary">+ Add Account</button>
+      </div>
+
       <!-- Budget Alerts -->
       <div class="settings-section">
         <h3>Budget Alerts</h3>
@@ -451,6 +480,33 @@
       <button id="saveCategoryBtn" class="btn-primary">Save</button>
       <button id="cancelCategoryBtn" class="btn-secondary">Cancel</button>
       <button id="deleteCategoryBtn" class="btn-danger" style="display:none;">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Account Edit Modal -->
+<div class="modal" id="accountModal">
+  <div class="modal-content">
+    <h3 id="accountModalTitle">Add Account</h3>
+    <label>Account Name</label>
+    <input type="text" id="accountNameInput" placeholder="e.g., Chase Checking">
+    <label>Account Type</label>
+    <select id="accountTypeInput" onchange="window.accountModule.handleAccountTypeChange()">
+      <option value="checking">Checking</option>
+      <option value="savings">Savings</option>
+      <option value="credit_card">Credit Card</option>
+      <option value="investment">Investment</option>
+    </select>
+    <label>Current Balance</label>
+    <input type="number" id="accountBalanceInput" step="0.01" placeholder="0.00">
+    <div id="accountCreditLimitGroup" style="display: none;">
+      <label>Credit Limit</label>
+      <input type="number" id="accountCreditLimitInput" step="0.01" placeholder="0.00">
+    </div>
+    <div class="modal-actions">
+      <button id="saveAccountBtn" class="btn-primary">Save</button>
+      <button id="cancelAccountBtn" class="btn-secondary">Cancel</button>
+      <button id="deleteAccountBtn" class="btn-danger" style="display:none;">Delete</button>
     </div>
   </div>
 </div>

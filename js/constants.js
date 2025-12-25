@@ -174,3 +174,32 @@ export const PERCENTAGE_THRESHOLDS = {
   BUDGET_EXCEEDED: 100 // % of budget used to show exceeded
 };
 
+// Account Types
+export const ACCOUNT_TYPES = {
+  CHECKING: 'checking',
+  SAVINGS: 'savings',
+  CREDIT_CARD: 'credit_card',
+  INVESTMENT: 'investment'
+};
+
+// Account Type Labels
+export const ACCOUNT_TYPE_LABELS = {
+  checking: 'Checking',
+  savings: 'Savings',
+  credit_card: 'Credit Card',
+  investment: 'Investment'
+};
+
+// Credit Card Utilization Thresholds
+export const CREDIT_UTILIZATION_THRESHOLDS = {
+  LOW: 40, // < 40% = good (green)
+  MEDIUM: 70, // 40-70% = caution (yellow)
+  HIGH: 70 // > 70% = warning (red)
+};
+
+// Default Account Names
+export const DEFAULT_ACCOUNT_NAMES = {
+  CHECKING: 'Main Checking',
+  CREDIT_CARD: 'Credit Card'
+};
+
