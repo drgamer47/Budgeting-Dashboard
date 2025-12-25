@@ -2574,3 +2574,211 @@ tr:hover {
     font-size: 18px;
   }
 }
+
+/* ========== ACCOUNTS ========== */
+
+/* Account Items */
+.account-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 10px;
+}
+
+.account-info {
+  flex: 1;
+}
+
+.account-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.account-type-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.account-type-badge.badge-checking {
+  background: rgba(96, 165, 250, 0.2);
+  color: #60a5fa;
+  border-color: #60a5fa;
+}
+
+.account-type-badge.badge-savings {
+  background: rgba(74, 222, 128, 0.2);
+  color: #4ade80;
+  border-color: #4ade80;
+}
+
+.account-type-badge.badge-credit_card {
+  background: rgba(251, 191, 36, 0.2);
+  color: #fbbf24;
+  border-color: #fbbf24;
+}
+
+.account-type-badge.badge-investment {
+  background: rgba(192, 132, 252, 0.2);
+  color: #c084fc;
+  border-color: #c084fc;
+}
+
+.account-balance {
+  font-size: 14px;
+  color: var(--text-primary);
+  font-weight: 500;
+  margin-top: 2px;
+}
+
+.account-credit-info {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.account-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* Credit Card Widget */
+.credit-card-container {
+  padding: 16px;
+}
+
+.credit-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.credit-card-name {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.credit-card-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.credit-card-stat {
+  display: flex;
+  flex-direction: column;
+}
+
+.credit-card-stat-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.credit-card-stat-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.credit-card-progress {
+  margin-bottom: 12px;
+}
+
+.credit-card-progress-bar {
+  width: 100%;
+  height: 24px;
+  background: var(--bg-tertiary);
+  border-radius: 12px;
+  overflow: hidden;
+  position: relative;
+}
+
+.credit-card-progress-fill {
+  height: 100%;
+  transition: width 0.3s ease, background-color 0.3s ease;
+  border-radius: 12px;
+}
+
+.credit-card-progress-fill.utilization-low {
+  background: var(--success);
+}
+
+.credit-card-progress-fill.utilization-medium {
+  background: var(--warning);
+}
+
+.credit-card-progress-fill.utilization-high {
+  background: var(--danger);
+}
+
+.credit-card-utilization {
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+.credit-card-utilization.utilization-low {
+  color: var(--success);
+}
+
+.credit-card-utilization.utilization-medium {
+  color: var(--warning);
+}
+
+.credit-card-utilization.utilization-high {
+  color: var(--danger);
+}
+
+.credit-card-empty {
+  text-align: center;
+  padding: 30px;
+  color: var(--text-secondary);
+}
+
+.credit-card-empty a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.credit-card-empty a:hover {
+  text-decoration: underline;
+}
+
+/* Net Worth KPI */
+.kpi-breakdown {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 8px;
+}
+
+@media (max-width: 768px) {
+  .kpi-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .credit-card-stats {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .credit-card-container {
+    padding: 12px;
+  }
+}
